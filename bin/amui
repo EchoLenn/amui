@@ -29,7 +29,7 @@ from features import (Activity, Extras, History, KEYS, config_dir, load_config, 
                       MusicBrowser, pywal_palette, custom_palette, atomic_json, COLOR_NAMES,
                       restore_appearance, save_appearance)
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 SEP = "\x1f"
 THEMES = {
     "nocturne": (234, 255, 244, 239, 211, 80, 183),
@@ -46,7 +46,8 @@ THEMES.update({name: tuple(parse_color(c) for c in colors.split()) for name, col
 
 
 def clean(value):
-    return "".join(c for c in str(value) if not unicodedata.category(c).startswith("C"))
+    return unicodedata.normalize("NFC", "".join(
+        c for c in str(value) if not unicodedata.category(c).startswith("C")))
 
 
 def width(text):
@@ -140,6 +141,28 @@ class Player:
                 pass
 
     def act(self, player, action):
+        if action in ("up", "down", "mute") and self.extras and self.extras.api_available:
+            try:
+                with self.extras.lock:
+                    vol = self.extras.api.request("volume")["volume"]
+                    if isinstance(vol, bool) or not isinstance(vol, (int, float)) or not 0 <= vol <= 1:
+                        raise ValueError("Invalid volume")
+                    if action == "mute":
+                        if vol > .001:
+                            self.saved_volume, vol = vol, 0
+                        else:
+                            vol = self.saved_volume
+                    else:
+                        vol = max(0, min(1, vol + (.05 if action == "up" else -.05)))
+                    response = self.extras.api.request("volume", {"volume": vol})
+                    if response.get("status") != "ok":
+                        raise ValueError("Volume rejected")
+                    self.extras.volume = vol
+                    self.track = replace(self.track, volume=vol)
+                self.notice = ""
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                self.notice = "Cider no aceptó el volumen · revisa su API"
+            return
         if isinstance(action, tuple):
             kind, position, identity = action
             if kind != "seek" or identity != self.track.identity:
@@ -216,6 +239,8 @@ class Player:
                 sampled = time.monotonic()
                 vol = number(command("playerctl", "-p", player, "volume"), .5)
                 if self.extras and self.extras.api_available and self.extras.identity == track.identity:
+                    if self.extras.volume is not None:
+                        vol = self.extras.volume
                     info = self.extras.now_playing
                     duration = number(info.get("durationInMillis")) / 1000
                     api_pos = number(info.get("currentPlaybackTime"), -1)
@@ -459,9 +484,16 @@ class Cover:
         x, y, w, h = rect
         try:
             if self.protocol == "kitty":
-                result = subprocess.run(self.command + ["--stdin=no", "--transfer-mode=file", "--silent",
-                    "--image-id=7311", f"--place={w}x{h}@{x}x{y}", "--scale-up", path],
-                    stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                # icat --place moves the real cursor; curses cannot see that move.
+                sys.stdout.write("\0337")
+                sys.stdout.flush()
+                try:
+                    result = subprocess.run(self.command + ["--stdin=no", "--transfer-mode=file", "--silent",
+                        "--image-id=7311", f"--place={w}x{h}@{x}x{y}", "--scale-up", path],
+                        stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                finally:
+                    sys.stdout.write("\0338")
+                    sys.stdout.flush()
                 self.drawn = result.returncode == 0
             else:
                 data = inline_image(path, rect, self.protocol)
@@ -1247,6 +1279,9 @@ class UI:
 
     def run(self):
         curses.curs_set(0)
+        # Never move whole terminal lines: graphics placements scroll with them.
+        self.screen.idlok(False)
+        self.screen.scrollok(False)
         self.screen.keypad(True)
         self.screen.timeout(33)
         curses.set_escdelay(25)

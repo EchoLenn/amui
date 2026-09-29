@@ -1,0 +1,13 @@
+#!/bin/sh
+# Font overrides apply only to this new amui window, never to kitty.conf.
+if ! command -v kitty >/dev/null 2>&1; then
+    printf '%s\n' 'amui-kitty requiere Kitty instalado.' >&2
+    exit 127
+fi
+amui_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec kitty --title amui \
+    -o 'font_family=JetBrains Mono' \
+    -o 'bold_font=auto' \
+    -o 'italic_font=auto' \
+    -o 'bold_italic_font=auto' \
+    "$amui_bin_dir/amui" "$@"

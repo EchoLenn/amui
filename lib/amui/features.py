@@ -429,6 +429,8 @@ class Extras:
         self.api = CiderAPI(config["cider"])
         self.items, self.label = [], "Consultando cola…"
         self.shuffle, self.repeat = None, None
+        self.volume = None
+        self.lock = threading.RLock()
         self.identity = ""
         self.now_playing = {}
         self.sampled = 0
@@ -436,6 +438,10 @@ class Extras:
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def poll(self, track):
+        with self.lock:
+            self._poll(track)
+
+    def _poll(self, track):
         if track.identity != self.identity:
             self.items, self.label = [], "Actualizando cola…"
             self.api_available = False
@@ -443,10 +449,11 @@ class Extras:
         if not track.player:
             self.items, self.label = [], "Abre Cider para ver la cola"
             self.shuffle, self.repeat, self.now_playing = None, None, {}
+            self.volume = None
             self.api_available = False
             return
-        self.shuffle = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "Shuffle")
-        self.repeat = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "LoopStatus")
+        shuffle = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "Shuffle")
+        repeat = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "LoopStatus")
         ids = bus(track.player, "get-property", "org.mpris.MediaPlayer2.TrackList", "Tracks")
         metadata = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "Metadata") or {}
         if not isinstance(metadata, dict):
@@ -462,6 +469,8 @@ class Extras:
                 self.items = [(str(item.get("xesam:title", "Sin título")),
                                ", ".join(item.get("xesam:artist", []))) for item in result]
                 self.label = "MPRIS" if upcoming else "Fin de la cola"
+                self.shuffle, self.repeat = shuffle, repeat
+                self.api_available = False
                 return
         try:
             data = self.api.request("now-playing")
@@ -474,6 +483,12 @@ class Extras:
             self.now_playing = info
             self.sampled = time.monotonic()
             self.api_available = True
+            try:
+                volume = self.api.request("volume")["volume"]
+                if not isinstance(volume, bool) and isinstance(volume, (int, float)) and 0 <= volume <= 1:
+                    self.volume = volume
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
             self.shuffle = bool(info["shuffleMode"]) if "shuffleMode" in info else bool(self.api.request("shuffle-mode")["value"])
             mode = info.get("repeatMode")
             if mode is None:
@@ -486,6 +501,12 @@ class Extras:
         except (OSError, ValueError, KeyError, TypeError):
             self.items, self.label = [], "Cider no expone cola · revisa su API local"
             self.api_available = False
+        # Do not publish temporary MPRIS defaults while the API is in flight.
+        if not self.api_available:
+            if self.shuffle is None:
+                self.shuffle = shuffle
+            if self.repeat is None:
+                self.repeat = repeat
 
     def run(self):
         while not self.stop.is_set():

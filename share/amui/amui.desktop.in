@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=amui
+Comment=Apple Music en Kitty con JetBrains Mono
+Exec="@BINDIR@/amui-kitty"
+Icon=multimedia-player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=Apple;Music;Cider;

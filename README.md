@@ -3,6 +3,29 @@
 Una sala de escucha en tu terminal: Cider reproduce Apple Music; **amui** pone
 la portada, los controles, el espectro de audio y las letras al frente.
 
+## Abrir con la fuente de amui
+
+Después de `make install`, abre **amui** desde el menú de aplicaciones o ejecuta
+`amui-kitty`. Este lanzador abre una ventana de Kitty con **JetBrains Mono**
+(debe estar instalada) y pasa todos los argumentos a amui. No modifica
+`kitty.conf`, ni la fuente de otras ventanas. En este equipo se verificó que
+resuelve el aspecto de los acentos observado con Fantasque.
+
+El comando `amui` se conserva para ejecutar dentro de la terminal actual y usa
+la fuente de esa terminal. Para la ventana dedicada: `amui-kitty --no-cava`.
+
+## Correcciones en 0.5.2
+
+- Volumen y mute usan la API de Cider cuando está conectada, incluida la lectura
+  del nivel real; MPRIS queda como alternativa cuando la API no está disponible.
+- Shuffle/repeat conservan el estado publicado mientras se consulta Cider,
+  sin mostrar valores provisionales de MPRIS entre respuestas.
+- Kitty conserva y restaura el cursor al dibujar portadas, incluso ante errores;
+  la interfaz desactiva las operaciones de desplazamiento de líneas completas.
+- Los acentos descompuestos se normalizan antes de dibujar y recortar el texto.
+- 59 pruebas aprobadas. Lecturas reales de volumen y shuffle verificadas;
+  la apariencia final debe comprobarse también en una ventana de Kitty.
+
 ## Lo nuevo en 0.5.1
 
 - **Fuentes de color y temas interactivos (`T`)**:
