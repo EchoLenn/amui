@@ -1,0 +1,45 @@
+# amui v0.3 · ~/.config/amui/config.toml
+# CLI > este archivo > valores predeterminados. Python 3.11+.
+theme = "nocturne"
+cava_input = "pulse"
+lyrics_offset = 0.0
+lyrics = true
+cava = true
+queue = true
+history = true
+notifications = true
+animations = true
+dynamic_palette = true
+mouse = true
+cover_protocol = "auto" # auto / kitty / iterm / sixel / none
+export_dir = "~/Music/amui-lyrics"
+
+[keybinds]
+shuffle = "s"
+repeat = "e"
+search = "/"
+export = "S"
+queue = "Q"
+# Se puede usar una tecla o una lista: forward = ["RIGHT", "l"]
+# Nombres: SPACE LEFT RIGHT UP DOWN. No se admiten teclas duplicadas.
+
+[cider]
+url = "http://127.0.0.1:10767"
+# Token: amui --connect-cider; también AMUI_CIDER_TOKEN en el entorno.
+# token_file = "~/.config/amui/cider.token"
+
+[scrobble]
+# Opt-in: ["listenbrainz"], ["lastfm"] o ambos.
+providers = []
+# credentials_file = "~/.config/amui/scrobble.json"
+# Variables de entorno: AMUI_LISTENBRAINZ_TOKEN, AMUI_LASTFM_API_KEY,
+# AMUI_LASTFM_SECRET, AMUI_LASTFM_SESSION_KEY.
+
+[themes.aurora]
+background = "#171923"
+foreground = "#f5f3ee"
+muted = "#9294a8"
+border = "#45465c"
+accent = "#b8a1ff"
+secondary = "#75e3ce"
+tertiary = "#eea6cf"

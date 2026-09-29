@@ -1,0 +1,1014 @@
+#!/usr/bin/env python3
+"""amui — Cider / MPRIS listening room. Python standard library only."""
+import argparse
+import bisect
+import curses
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, replace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib/amui"))
+from features import (Activity, Extras, History, KEYS, config_dir, load_config, connect_cider,
+                      detect_cover, inline_image, export_lyrics, nearest_color, rgb, smooth)
+
+VERSION = "0.3.0"
+SEP = "\x1f"
+THEMES = {
+    "nocturne": (234, 255, 244, 239, 211, 80, 183),
+    "ember": (234, 230, 244, 239, 209, 222, 173),
+    "ice": (234, 255, 244, 239, 81, 153, 111),
+}
+
+
+def clean(value):
+    return "".join(c for c in str(value) if not unicodedata.category(c).startswith("C"))
+
+
+def width(text):
+    return sum(0 if unicodedata.combining(c) else
+               2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def clip(text, limit):
+    text = clean(text)
+    if width(text) <= limit:
+        return text
+    out = ""
+    for c in text:
+        if width(out + c) > max(0, limit - 1):
+            break
+        out += c
+    return out + ("…" if limit > 0 else "")
+
+
+def number(value, default=0.0):
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except (ValueError, TypeError):
+        return default
+
+
+def clock(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def command(*args):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=2)
+        return result.stdout.rstrip("\r\n") if result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+@dataclass(frozen=True)
+class Track:
+    player: str = ""
+    identity: str = ""
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    art: str = ""
+    length: float = 0
+    position: float = 0
+    volume: float = .5
+    status: str = "Stopped"
+    sampled: float = 0
+
+    def elapsed(self):
+        pos = self.position + (time.monotonic() - self.sampled if self.status == "Playing" else 0)
+        return max(0, min(pos, self.length) if self.length else pos)
+
+    def lyrics_key(self):
+        return (self.title, self.artist, self.album, round(self.length))
+
+
+def metadata_track(player, raw, old):
+    fields = raw.split(SEP)
+    fields += [""] * (6 - len(fields))
+    ident, title, artist, album, art, duration = fields[:6]
+    identity = "|".join((player, ident, title, artist, album))
+    length = old.length if identity == old.identity else 0
+    micros = number(duration)
+    if 0 < micros < 86400000000:
+        length = micros / 1000000
+    return Track(player=player, identity=identity, title=clean(title),
+                 artist=clean(artist), album=clean(album), art=art, length=length)
+
+
+class Player:
+    def __init__(self, stop, explicit=None):
+        self.stop, self.explicit = stop, explicit
+        self.track = Track()
+        self.actions = queue.Queue(maxsize=32)
+        self.saved_volume = .5
+        self.notice = ""
+        self.extras = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def send(self, action):
+        if self.track.player:
+            try:
+                self.actions.put_nowait((self.track.player, action))
+            except queue.Full:
+                pass
+
+    def act(self, player, action):
+        if isinstance(action, tuple):
+            kind, position, identity = action
+            if kind != "seek" or identity != self.track.identity:
+                return
+            args = {action: ["position", str(max(0, min(position, self.track.length)))]}
+        else:
+            args = {}
+        if self.extras and self.extras.api_available and (action in ("shuffle", "repeat", "forward", "back", "restart") or isinstance(action, tuple)):
+            try:
+                if action in ("shuffle", "repeat"):
+                    self.extras.api.request("toggle-" + action, {})
+                else:
+                    pos = action[1] if isinstance(action, tuple) else 0 if action == "restart" else self.track.elapsed() + (5 if action == "forward" else -5)
+                    self.extras.api.request("seek", {"position": max(0, min(pos, self.track.length or pos))})
+                self.extras.poll(self.track)
+                self.notice = ""
+            except (OSError, ValueError):
+                self.notice = "Cider no aceptó el control · revisa su API"
+            return
+        if action == "shuffle":
+            current = command("playerctl", "-p", player, "shuffle")
+            if current not in ("On", "Off"):
+                self.notice = "Shuffle requiere conectar Cider: amui --connect-cider"
+                return
+            args[action] = ["shuffle", "Off" if current == "On" else "On"]
+        elif action == "repeat":
+            current = command("playerctl", "-p", player, "loop")
+            if current not in ("None", "Track", "Playlist"):
+                self.notice = "Repeat requiere conectar Cider: amui --connect-cider"
+                return
+            args[action] = ["loop", {"None": "Playlist", "Playlist": "Track", "Track": "None"}[current]]
+        args.update({
+            "toggle": ["play-pause"], "next": ["next"], "previous": ["previous"],
+            "forward": ["position", "5+"], "back": ["position", "5-"],
+            "restart": ["position", "0"],
+        })
+        if action in ("up", "down", "mute"):
+            vol = number(command("playerctl", "-p", player, "volume"), self.track.volume)
+            if action == "mute":
+                if vol > .001:
+                    self.saved_volume, vol = vol, 0
+                else:
+                    vol = self.saved_volume
+            else:
+                vol = max(0, min(1, vol + (.05 if action == "up" else -.05)))
+            args[action] = ["volume", str(vol)]
+        try:
+            result = subprocess.run(["playerctl", "-p", player, *args[action]],
+                                    capture_output=True, text=True, timeout=2)
+            self.notice = "" if result.returncode == 0 else "Cider no aceptó el control"
+        except (OSError, subprocess.TimeoutExpired):
+            self.notice = "MPRIS no respondió"
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                while True:
+                    player, action = self.actions.get_nowait()
+                    self.act(player, action)
+            except queue.Empty:
+                pass
+            names = command("playerctl", "-l").splitlines()
+            names = [n for n in names if n == self.explicit] if self.explicit else [
+                n for n in names if n.startswith("chromium.instance")]
+            states = [(n, command("playerctl", "-p", n, "status")) for n in names]
+            player, status = next((p for p in states if p[1] == "Playing"),
+                                  states[0] if states else ("", "Stopped"))
+            if player:
+                raw = command("playerctl", "-p", player, "metadata", "--format", SEP.join(
+                    "{{" + key + "}}" for key in ("mpris:trackid", "xesam:title", "xesam:artist",
+                                                   "xesam:album", "mpris:artUrl", "mpris:length")))
+                track = metadata_track(player, raw, self.track)
+                pos = number(command("playerctl", "-p", player, "position"))
+                sampled = time.monotonic()
+                vol = number(command("playerctl", "-p", player, "volume"), .5)
+                if self.extras and self.extras.api_available and self.extras.identity == track.identity:
+                    info = self.extras.now_playing
+                    duration = number(info.get("durationInMillis")) / 1000
+                    api_pos = number(info.get("currentPlaybackTime"), -1)
+                    if duration > 0 and api_pos >= 0:
+                        track = replace(track, length=duration)
+                        age = max(0, time.monotonic() - self.extras.sampled)
+                        if age <= 5:
+                            pos = api_pos + (age if status == "Playing" else 0)
+                self.track = replace(track, status=status, position=pos, volume=vol, sampled=sampled)
+            else:
+                self.track = Track()
+            self.stop.wait(.3)
+
+
+def parse_lrc(text):
+    entries = []
+    offset = re.search(r"\[offset:([+-]?\d+)\]", text, re.I)
+    shift = int(offset[1]) / 1000 if offset else 0
+    for line in text.splitlines():
+        stamps = list(re.finditer(r"\[(\d+):(\d+(?:\.\d+)?)\]", line))
+        if stamps:
+            words = clean(line[stamps[-1].end():].strip())
+            for stamp in stamps:
+                seconds = number(stamp[1], -1) * 60 + number(stamp[2], -1) - shift
+                if math.isfinite(seconds) and -600 <= seconds < 86400:
+                    entries.append((seconds, words))
+    return sorted(entries, key=lambda entry: entry[0])
+
+
+class Lyrics:
+    def __init__(self, stop, enabled=True):
+        self.stop, self.enabled = stop, enabled
+        self.requests = queue.Queue(maxsize=1)
+        self.result = (None, [], [], "Letras en espera")
+        self.requested = None
+        self.manual_key = None
+        self.manual_query = None
+        self.sequence = 0
+        self.cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "amui/lyrics"
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def request(self, track, retry=False, query=None):
+        if query:
+            self.manual_key = track.lyrics_key()
+            self.manual_query = query
+        elif self.manual_key == track.lyrics_key() and not retry:
+            return
+        elif self.manual_key != track.lyrics_key():
+            self.manual_key = None
+            self.manual_query = None
+        elif retry:
+            query = self.manual_query
+        if not self.enabled or not track.title or (track.lyrics_key() == self.requested and not retry):
+            return
+        self.requested = track.lyrics_key()
+        self.sequence += 1
+        try:
+            self.requests.get_nowait()
+        except queue.Empty:
+            pass
+        self.requests.put_nowait((track, retry, query, self.sequence))
+
+    def fetch(self, track, retry):
+        key = hashlib.sha256(json.dumps(track.lyrics_key(), ensure_ascii=False).encode()).hexdigest()
+        path = self.cache / (key + ".json")
+        if not retry:
+            try:
+                if time.time() - path.stat().st_mtime < 30 * 86400:
+                    data = json.loads(path.read_text())
+                    if isinstance(data, dict):
+                        return data
+            except (OSError, ValueError):
+                pass
+        params = dict(track_name=track.title, artist_name=track.artist, album_name=track.album)
+        if track.length:
+            params["duration"] = round(track.length)
+        # Retry reissues without album. A final duration-free match is displayed
+        # as plain text if the MPRIS clock disagrees with the catalog duration.
+        for attempt in range(3):
+            url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers={"User-Agent": "amui/" + VERSION,
+                                                      "Accept": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=7) as response:
+                    data = json.loads(response.read(2_000_000))
+                break
+            except urllib.error.HTTPError as error:
+                if error.code != 404 and error.code < 500:
+                    raise
+                if attempt == 0 and params.get("album_name"):
+                    params.pop("album_name")
+                elif attempt < 2 and "duration" in params:
+                    params.pop("duration")
+                else:
+                    raise
+        if not isinstance(data, dict):
+            raise ValueError("Invalid lyrics response")
+        try:
+            self.cache.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.cache, delete=False) as file:
+                json.dump(data, file)
+                temporary = Path(file.name)
+            temporary.replace(path)
+        except OSError:
+            pass
+        return data
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                track, retry, query, sequence = self.requests.get(timeout=.2)
+            except queue.Empty:
+                continue
+            key = track.lyrics_key()
+            if sequence != self.sequence:
+                continue
+            self.result = (key, [], [], "Buscando en LRCLIB…")
+            try:
+                search_track = replace(track, title=query[0], artist=query[1], album="", length=0) if query else track
+                data = self.fetch(search_track, retry)
+                synced = parse_lrc(data.get("syncedLyrics") or "")
+                plain = [clean(line) for line in (data.get("plainLyrics") or "").splitlines()]
+                mismatch = track.length and number(data.get("duration")) and abs(track.length - number(data["duration"])) > 2
+                if mismatch:
+                    plain = plain or [line for _, line in synced]
+                    synced = []
+                label = "Instrumental" if data.get("instrumental") else (
+                    "LRCLIB · sincronizadas" if synced else
+                    "LRCLIB · texto · [ / ] desplazar" if plain else "Sin letras para esta canción")
+                if mismatch and plain:
+                    label = "Texto · duración MPRIS distinta · [ / ]"
+                if query:
+                    label = "Búsqueda manual · " + label
+                result = (key, synced, plain, label)
+            except urllib.error.HTTPError as error:
+                result = (key, [], [], "Sin letras en LRCLIB" if error.code == 404 else "LRCLIB no disponible · R reintentar")
+            except (OSError, ValueError, TypeError):
+                result = (key, [], [], "Sin conexión a LRCLIB · R reintentar")
+            if key == self.requested and sequence == self.sequence:
+                self.result = result
+
+
+class Spectrum:
+    """Own CAVA process and temporary config; never touches the user's config."""
+    def __init__(self, stop, enabled=True, method="pulse"):
+        self.stop, self.enabled, self.method = stop, enabled, method
+        self.bars = [0.] * 48
+        self.label = "CAVA · iniciando" if enabled else "CAVA desactivado"
+        self.process = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def run(self):
+        if not self.enabled:
+            return
+        if not shutil.which("cava"):
+            self.label = "Instala cava para activar el espectro"
+            return
+        with tempfile.TemporaryDirectory(prefix="amui-cava-") as folder:
+            config = Path(folder) / "config"
+            config.write_text("[general]\nframerate=30\nbars=48\nautosens=1\n"
+                              "[input]\nmethod=" + self.method + "\nsource=auto\n"
+                              "[output]\nmethod=raw\nraw_target=/dev/stdout\ndata_format=ascii\n"
+                              "ascii_max_range=1000\nbar_delimiter=59\nframe_delimiter=10\n")
+            try:
+                self.process = subprocess.Popen(["cava", "-p", str(config)], stdout=subprocess.PIPE,
+                                                stderr=subprocess.DEVNULL, text=True)
+                if self.stop.is_set():
+                    self.process.terminate()
+                for line in self.process.stdout:
+                    if self.stop.is_set():
+                        break
+                    try:
+                        values = [min(1., max(0., int(v) / 1000)) for v in line.strip().split(";") if v]
+                    except ValueError:
+                        continue
+                    if len(values) == 48:
+                        self.bars = values
+                        self.label = "CAVA · salida del sistema"
+                if not self.stop.is_set():
+                    self.label = "CAVA sin señal · revisa el backend de audio"
+            except OSError:
+                self.label = "No se pudo iniciar CAVA"
+            finally:
+                self.close()
+
+    def close(self):
+        proc = self.process
+        if proc:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            if proc.stdout:
+                proc.stdout.close()
+
+
+class Cover:
+    def __init__(self, protocol="auto"):
+        self.protocol = detect_cover(protocol)
+        self.command = (["kitten", "icat"] if shutil.which("kitten") else
+                        ["kitty", "+kitten", "icat"] if shutil.which("kitty") else [])
+        self.enabled = bool((self.command and self.protocol == "kitty") or self.protocol == "iterm" or
+                            (self.protocol == "sixel" and (shutil.which("chafa") or shutil.which("magick"))))
+        self.last = None
+        self.drawn = False
+        self.needs_redraw = False
+
+    def clear(self):
+        if self.drawn:
+            if self.protocol == "kitty":
+                sys.stdout.write("\033_Ga=d,d=I,i=7311,q=2;\033\\")
+            elif self.last:
+                self.needs_redraw = True
+                x, y, w, h = self.last[1]
+                size = shutil.get_terminal_size()
+                count = max(0, min(w, size.columns - x - 1))
+                sys.stdout.write("\0337" + "".join(f"\033[{row + 1};{x + 1}H" + " " * count
+                    for row in range(y, min(y + h, size.lines)) if count) + "\0338")
+            sys.stdout.flush()
+        self.drawn = False
+        self.last = None
+
+    def show(self, art, rect):
+        if not self.enabled or not rect:
+            self.clear()
+            return
+        path = urllib.parse.unquote(urllib.parse.urlparse(art).path) if art.startswith("file://") else art
+        try:
+            stat = Path(path).stat() if path else None
+        except OSError:
+            stat = None
+        signature = (path, rect, stat.st_mtime_ns if stat else None, stat.st_size if stat else None)
+        if signature == self.last:
+            return
+        self.clear()
+        if not path or not Path(path).is_file():
+            return
+        x, y, w, h = rect
+        try:
+            if self.protocol == "kitty":
+                result = subprocess.run(self.command + ["--stdin=no", "--transfer-mode=file", "--silent",
+                    "--image-id=7311", f"--place={w}x{h}@{x}x{y}", "--scale-up", path],
+                    stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                self.drawn = result.returncode == 0
+            else:
+                data = inline_image(path, rect, self.protocol)
+                sys.stdout.flush()
+                sys.stdout.buffer.write(f"\0337\033[{y + 1};{x + 1}H".encode() + data + b"\0338")
+                sys.stdout.buffer.flush()
+                self.drawn = True
+            if self.drawn:
+                self.last = signature
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+
+
+class UI:
+    def __init__(self, screen, player, lyrics, spectrum, options):
+        self.screen, self.player, self.lyrics, self.spectrum = screen, player, lyrics, spectrum
+        self.options = options
+        self.config = getattr(options, "config_data", None) or load_config()
+        self.cover = Cover(self.config["cover_protocol"])
+        self.theme = options.theme
+        self.themes = {**THEMES, **self.config["themes"]}
+        self.activity = getattr(options, "activity", None)
+        self.extras = getattr(player, "extras", None)
+        self.show_queue = self.config["queue"]
+        self.queue_focus = False
+        self.show_lyrics, self.show_visual = not options.no_lyrics, not options.no_cava
+        self.focus = False
+        self.help = False
+        self.help_page = 0
+        self.scroll = 0
+        self.offset = self.config["lyrics_offset"]
+        self.old_identity = ""
+        self.old_size = None
+        self.art_rect = None
+        self.palette = {}
+        self.changed_at = time.monotonic()
+        self.toast_text, self.toast_until = "", 0
+        self.prompt = None
+        self.prompt_value = ""
+        self.search_title = ""
+        self.prompt_track = None
+        self.progress_rect = None
+        self.lyrics_rect = None
+        self.progress_value = 0.
+        self.progress_time = time.monotonic()
+        self.dynamic_colors = None
+        self.manual_scroll_until = 0
+
+    def toast(self, text):
+        self.toast_text, self.toast_until = text, time.monotonic() + 3
+
+    def binding(self, action):
+        return "/".join(self.config["keybinds"][action])
+
+    def colors(self):
+        bg, fg, muted, border, accent, cyan, lilac = self.dynamic_colors or self.themes[self.theme]
+        if curses.has_colors():
+            curses.start_color()
+            colors = [fg, muted, border, accent, cyan, lilac]
+            for i, color in enumerate(colors, 1):
+                curses.init_pair(i, color if curses.COLORS >= 256 else [7, 7, 4, 5, 6, 3][i-1],
+                                 bg if curses.COLORS >= 256 else 0)
+                self.palette[i] = curses.color_pair(i)
+        self.screen.bkgd(" ", self.palette.get(1, 0))
+
+    def fade(self):
+        if not self.config["animations"]:
+            return
+        elapsed = min(1., (time.monotonic() - self.changed_at) / .65)
+        if not curses.has_colors() or curses.COLORS < 256:
+            return
+        colors = self.dynamic_colors or self.themes[self.theme]
+        for pair, target in ((7, colors[1]), (8, colors[4]), (9, colors[2])):
+            color = nearest_color(tuple(round(a + (b - a) * elapsed) for a, b in zip(rgb(colors[0]), rgb(target))))
+            curses.init_pair(pair, color, colors[0])
+            self.palette[pair] = curses.color_pair(pair)
+
+    def text(self, y, x, text, color=1, bold=False, limit=None):
+        h, w = self.screen.getmaxyx()
+        if 0 <= y < h and 0 <= x < w:
+            text = clip(text, min(w - x - 1, limit if limit is not None else w))
+            try:
+                self.screen.addstr(y, x, text, self.palette.get(color, 0) | (curses.A_BOLD if bold else 0))
+            except curses.error:
+                pass
+
+    def box(self, y, x, h, w, title="", tag=""):
+        self.text(y, x, "╭" + "─" * (w - 2) + "╮", 3)
+        self.text(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", 3)
+        for row in range(y + 1, y + h - 1):
+            self.text(row, x, "│", 3)
+            self.text(row, x + w - 1, "│", 3)
+        self.text(y, x + 3, " " + title + " ", 4, True, w - 6)
+        if tag and w > width(title) + width(tag) + 12:
+            self.text(y, x + w - width(tag) - 4, " " + tag + " ", 2)
+
+    def lyrics_panel(self, y, x, h, w, track):
+        self.lyrics_rect = (x, y, w, h)
+        self.box(y, x, h, w, "LYRICS", "LIVE" if self.lyrics.enabled else "OFF")
+        key, synced, plain, label = self.lyrics.result
+        if key != track.lyrics_key():
+            synced, plain, label = [], [], "Buscando letras…" if track.title else "La próxima canción empieza aquí"
+        if not self.lyrics.enabled:
+            label = "Letras desactivadas con --no-lyrics"
+        self.text(y + h - 2, x + 3, label, 2, limit=w - 6)
+        if synced:
+            index = bisect.bisect_right([t for t, _ in synced], track.elapsed() + self.offset) - 1
+            if time.monotonic() < self.manual_scroll_until:
+                index = max(0, min(len(synced) - 1, index + self.scroll))
+            center = y + max(2, (h - 2) // 2)
+            for i, (_, line) in enumerate(synced):
+                row = center + (i - index) * 2
+                if y + 2 <= row < y + h - 3:
+                    current = i == index
+                    self.text(row, x + 3, "›" if current else " ", 4, current)
+                    self.text(row, x + 5, line or "♪", 4 if current else 1 if i == index + 1 else 2,
+                              current, w - 8)
+        elif plain:
+            self.scroll = max(0, min(self.scroll, max(0, len(plain) - (h - 5))))
+            for i, line in enumerate(plain[self.scroll:self.scroll + h - 5]):
+                self.text(y + 2 + i, x + 3, line, 1, limit=w - 6)
+        else:
+            self.text(y + h // 2 - 1, x + 3, "♪", 4, True)
+            self.text(y + h // 2 + 1, x + 3, label, 2, limit=w - 6)
+
+    def now_playing(self, y, x, h, w, track):
+        self.box(y, x, h, w, "NOW PLAYING", "CIDER / MPRIS")
+        cover_h = min(h - 4, 13)
+        cover_w = cover_h * 2
+        cover = w >= 59 and h >= 14
+        tx = x + cover_w + 6 if cover else x + 3
+        tw = x + w - tx - 3
+        if cover:
+            cy, cx = y + 2, x + 3
+            self.art_rect = (cx, cy, cover_w, cover_h)
+            # Text fallback occupies the same rectangle as the Kitty image.
+            path = urllib.parse.unquote(urllib.parse.urlparse(track.art).path) if track.art.startswith("file://") else track.art
+            if not self.cover.enabled or not path or not Path(path).is_file():
+                for i in range(cover_h):
+                    self.text(cy + i, cx, "░" * cover_w, 3)
+                self.text(cy + cover_h // 2 - 2, cx + 3, "   ╭──────╮", 6)
+                self.text(cy + cover_h // 2 - 1, cx + 3, " ╭─┤  ◉   ├─╮", 4)
+                self.text(cy + cover_h // 2, cx + 3, " ╰─┤      ├─╯", 4)
+                self.text(cy + cover_h // 2 + 1, cx + 3, "   ╰──────╯", 6)
+        self.text(y + 2, tx, "TU SESIÓN / APPLE MUSIC", 5, True, tw)
+        self.text(y + 4, tx, track.title or "Dale play a tu mundo.", 7 if 7 in self.palette else 1, True, tw)
+        self.text(y + 6, tx, track.artist or "Abre Cider y elige una canción", 8 if 8 in self.palette else 4, True, tw)
+        if h >= 12:
+            self.text(y + 8, tx, track.album or "Una terminal. Toda tu música.", 9 if 9 in self.palette else 2, limit=tw)
+        state = "▶ REPRODUCIENDO" if track.status == "Playing" else "Ⅱ EN PAUSA" if track.status == "Paused" else "■ DETENIDO" if track.player else "○ ESPERANDO CIDER"
+        self.text(y + h - 3, tx, state, 5, True, tw)
+
+    def spectrum_panel(self, y, x, h, w):
+        self.box(y, x, h, w, "SPECTRUM", self.spectrum.label)
+        n = min(48, (w - 6) // 2)
+        span = max(1, h - 3)
+        start = x + (w - n * 2) // 2
+        blocks = " ▁▂▃▄▅▆▇█"
+        for i in range(n):
+            value = self.spectrum.bars[min(47, int(i * 48 / n))] * span
+            for row in range(span):
+                part = min(8, max(0, round((value - row) * 8)))
+                self.text(y + h - 2 - row, start + i * 2, blocks[part],
+                          5 if row < span / 3 else 6 if row < span * 2 / 3 else 4)
+        if not any(self.spectrum.bars):
+            self.text(y + h // 2, x + 3, self.spectrum.label, 2, limit=w - 6)
+
+    def transport(self, y, w, track):
+        self.text(y, 3, "─" * (w - 6), 3)
+        pos, length = track.elapsed(), track.length
+        self.text(y + 1, 3, clock(pos), 5)
+        total = clock(length) if length else "--:--"
+        self.text(y + 1, w - 8, total, 2)
+        size = max(1, w - 23)
+        fraction = max(0, min(1, pos / length)) if length else 0
+        now = time.monotonic()
+        self.progress_value = smooth(self.progress_value, fraction, now - self.progress_time) if self.config["animations"] else fraction
+        self.progress_time = now
+        filled = min(size - 1, int(self.progress_value * (size - 1)))
+        self.progress_rect = (11, y + 1, size)
+        self.text(y + 1, 11, "━" * filled + "●", 4)
+        self.text(y + 1, 12 + filled, "─" * (size - filled - 1), 3)
+        vol = min(1, max(0, track.volume))
+        self.text(y + 3, 3, f"{self.binding('previous')}  ‹‹   {self.binding('toggle')}  ▶ / Ⅱ   {self.binding('next')}  ››", 1, True)
+        label = f"{'MUTE' if vol == 0 else 'VOL'}  {'━' * round(vol * 8)}{'─' * (8 - round(vol * 8))} {vol:.0%}"
+        if w >= 66:
+            self.text(y + 3, w - width(label) - 4, label, 5)
+        shuffle = "—" if not self.extras or self.extras.shuffle is None else "ON" if self.extras.shuffle else "OFF"
+        repeat = {None: "—", "None": "OFF", "Track": "PISTA", "Playlist": "COLA"}.get(self.extras.repeat if self.extras else None, "—")
+        self.text(y + 2, 3, f"{self.binding('shuffle')} shuffle {shuffle}   {self.binding('repeat')} repeat {repeat}", 5, limit=w - 6)
+        self.text(y + 5, 3, f"{self.binding('search')} buscar letras   {self.binding('export')} guardar   {self.binding('queue')} cola   {self.binding('help')} ayuda   {self.binding('quit')} salir", 2, limit=w - 6)
+
+    def queue_panel(self, y, x, h, w):
+        self.box(y, x, h, w, "UP NEXT", "QUEUE")
+        items, label = (self.extras.items, self.extras.label) if self.extras else ([], "Cola no disponible")
+        if self.extras and self.extras.identity != self.player.track.identity:
+            items, label = [], "Actualizando cola…"
+        if not items:
+            self.text(y + 3, x + 3, label, 2, limit=w - 6)
+        for i, (title, artist) in enumerate(items[:min(5, (h - 3) // 2)]):
+            self.text(y + 2 + i * 2, x + 3, f"{i + 1:02d}  {title}", 4 if i == 0 else 1, i == 0, w - 6)
+            self.text(y + 3 + i * 2, x + 7, artist, 2, limit=w - 10)
+
+    def mini(self, track, w):
+        state = "▶" if track.status == "Playing" else "Ⅱ" if track.player else "○"
+        timer = f"{clock(track.elapsed())}/{clock(track.length) if track.length else '--:--'}"
+        volume = f"♪ {track.volume:.0%}"
+        tail = f"  {timer}  {volume}"
+        title = f"{state} {track.title or 'Esperando Cider'} — {track.artist}"
+        self.text(0, 0, clip(title, max(1, w - width(tail) - 2)) + tail, 4, True, w - 1)
+        message = self.toast_text if time.monotonic() < self.toast_until else f"{self.binding('toggle')} play/pausa · {self.binding('shuffle')} shuffle · {self.binding('repeat')} repeat · {self.binding('quit')} salir"
+        self.text(1, 0, message, 2, limit=w - 1)
+
+    def prompt_render(self):
+        h, w = self.screen.getmaxyx()
+        labels = {"title": "Título para buscar", "artist": "Artista para buscar", "export": "Directorio para guardar letras"}
+        if getattr(self.options, "mini", False) or h < 12:
+            self.text(1, 0, f"{labels[self.prompt]}: {self.prompt_value}▏", 5, limit=w - 1)
+            return
+        pw = min(w - 4, 88)
+        x, y = (w - pw) // 2, (h - 7) // 2
+        for row in range(y, y + 7):
+            self.text(row, x, " " * pw)
+        self.box(y, x, 7, pw, labels[self.prompt])
+        value = self.prompt_value
+        while width(value) > pw - 8:
+            value = value[1:]
+        self.text(y + 2, x + 3, value + "▏", 5)
+        self.text(y + 4, x + 3, "ENTER aceptar · ESC cancelar · Ctrl+U limpiar", 2, limit=pw - 6)
+
+    def prompt_key(self, key):
+        if key == "\x1b":
+            self.prompt = None
+        elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+            self.prompt_value = self.prompt_value[:-1]
+        elif key == "\x15":
+            self.prompt_value = ""
+        elif key in ("\n", "\r", curses.KEY_ENTER):
+            value = self.prompt_value.strip()
+            if not value:
+                return True
+            if self.prompt == "title":
+                self.search_title = value
+                self.prompt, self.prompt_value = "artist", self.prompt_track.artist
+            elif self.prompt == "artist":
+                self.lyrics.request(self.prompt_track, retry=True, query=(self.search_title, value))
+                self.toast("Buscando: " + self.search_title + " — " + value)
+                self.prompt = None
+            else:
+                try:
+                    path = export_lyrics(self.prompt_track, *self.export_snapshot, value)
+                    self.toast("Guardado: " + str(path))
+                except (OSError, ValueError) as error:
+                    self.toast(str(error))
+                self.prompt = None
+        elif isinstance(key, str) and key.isprintable() and len(self.prompt_value) < 500:
+            self.prompt_value += key
+        return True
+
+    def mouse(self):
+        try:
+            _, x, y, _, state = curses.getmouse()
+        except curses.error:
+            return
+        if self.progress_rect and state & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
+            px, py, size = self.progress_rect
+            if y == py and px <= x < px + size and self.player.track.length:
+                self.player.send(("seek", (x - px) / max(1, size - 1) * self.player.track.length, self.player.track.identity))
+        if self.lyrics_rect:
+            lx, ly, lw, lh = self.lyrics_rect
+            if lx <= x < lx + lw and ly <= y < ly + lh:
+                if self.lyrics.result[1] and time.monotonic() >= self.manual_scroll_until:
+                    self.scroll = 0
+                if state & curses.BUTTON4_PRESSED:
+                    self.scroll -= 3
+                elif state & getattr(curses, "BUTTON5_PRESSED", 0):
+                    self.scroll += 3
+                self.manual_scroll_until = time.monotonic() + 5
+
+    def render(self):
+        screen, track = self.screen, self.player.track
+        h, w = screen.getmaxyx()
+        if (h, w) != self.old_size:
+            self.cover.clear()
+            screen.clear()
+            self.old_size = (h, w)
+        screen.erase()
+        self.art_rect = None
+        self.progress_rect = self.lyrics_rect = None
+        if getattr(self.options, "mini", False):
+            self.mini(track, w)
+            if self.prompt:
+                self.prompt_render()
+            screen.refresh()
+            return
+        self.text(1, 3, "a m u i", 4, True)
+        if w > 58:
+            self.text(1, 16, "A LITTLE LOUDER. A LITTLE CLOSER.", 2)
+        if w > 85:
+            self.text(1, w - 26, f"● {self.theme.upper()}  /  {time.strftime('%H:%M')}", 5)
+        if h < 22 or w < 42:
+            self.text(4, 3, track.title or "amui · Cider", 1, True)
+            self.text(6, 3, track.artist, 4)
+            self.text(8, 3, "Amplía a 42 × 22 o más", 2)
+            self.text(10, 3, "SPACE play/pausa · q salir", 5)
+            screen.refresh()
+            self.cover.clear()
+            return
+        bottom = h - 7
+        content_h = bottom - 4
+        if self.queue_focus:
+            self.queue_panel(3, 2, content_h, w - 4)
+        elif self.focus and self.show_lyrics:
+            self.lyrics_panel(3, 2, content_h, w - 4, track)
+        else:
+            side = (self.show_lyrics or self.show_queue) and w >= 112
+            left_w = int(w * .57) if side else w - 4
+            visual_h = min(9, max(6, content_h // 3)) if self.show_visual and content_h >= 23 else 0
+            now_h = content_h - (visual_h + 1 if visual_h else 0)
+            self.now_playing(3, 2, now_h, left_w, track)
+            if visual_h:
+                self.spectrum_panel(4 + now_h, 2, visual_h, left_w)
+            if side:
+                queue_h = min(13, content_h) if self.show_queue else 0
+                lyric_h = content_h - queue_h - 1 if queue_h and self.show_lyrics else content_h
+                if self.show_lyrics and lyric_h >= 9:
+                    self.lyrics_panel(3, left_w + 4, lyric_h, w - left_w - 6, track)
+                if self.show_queue:
+                    qy = 4 + lyric_h if self.show_lyrics and lyric_h >= 9 else 3
+                    qh = queue_h if qy > 3 else content_h
+                    self.queue_panel(qy, left_w + 4, qh, w - left_w - 6)
+        self.transport(bottom, w, track)
+        notice = self.player.notice
+        if self.activity:
+            notice = notice or self.activity.notice or (self.activity.scrobbler.label if self.config["scrobble"]["providers"] else "")
+        if notice:
+            self.text(h - 1, 3, notice, 4, limit=w - 6)
+        if self.help:
+            self.art_rect = None
+            screen.erase()
+            self.box(2, 2, h - 4, w - 4, "MAKE YOURSELF AT HOME")
+            labels = dict(toggle="play / pausa", next="siguiente", previous="anterior", forward="adelantar 5s",
+                back="retroceder 5s", up="subir volumen", down="bajar volumen", mute="mute / restaurar",
+                restart="reiniciar pista", shuffle="shuffle", repeat="repeat", quit="salir", help="ayuda",
+                lyrics="mostrar letras", focus="letras ampliadas", visualizer="mostrar CAVA", theme="cambiar tema",
+                scroll_up="subir letras", scroll_down="bajar letras", offset_back="offset −0.5s",
+                offset_forward="offset +0.5s", retry="reintentar letras", open="abrir Cider",
+                search="buscar letras", export="guardar letras", queue="cola ampliada")
+            rows = [f"{self.binding(a):12s} {label}" for a, label in labels.items()]
+            columns, step = (2 if w >= 90 else 1), (2 if h >= 36 else 1)
+            count = max(1, (h - 8) // step)
+            pages = max(1, math.ceil(len(rows) / (count * columns)))
+            self.help_page %= pages
+            visible = rows[self.help_page * count * columns:(self.help_page + 1) * count * columns]
+            col_width = (w - 10) // columns
+            for i, line in enumerate(visible):
+                self.text(4 + (i % count) * step, 5 + (i // count) * col_width, line, limit=col_width - 2)
+            self.text(h - 4, 5, f"PgUp/PgDn {self.help_page + 1}/{pages} · Esc cerrar · mouse: seek / scroll", 2, limit=w - 10)
+        if time.monotonic() < self.toast_until:
+            self.text(2, 3, "♪ " + self.toast_text, 5, True, w - 6)
+        if self.prompt:
+            self.art_rect = None
+            self.prompt_render()
+        if self.cover.protocol != "kitty" and self.cover.last and self.cover.last[1] != self.art_rect:
+            self.cover.clear()
+        if self.cover.needs_redraw:
+            screen.redrawwin()
+            self.cover.needs_redraw = False
+        screen.refresh()
+        self.cover.show(track.art, self.art_rect)
+
+    def key(self, key):
+        if self.prompt:
+            return self.prompt_key(key)
+        if self.help and key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
+            self.help_page += 1 if key == curses.KEY_NPAGE else -1
+            return True
+        if key == curses.KEY_MOUSE and self.config["mouse"] and not self.help:
+            self.mouse()
+            return True
+        normalized = {" ": "SPACE", curses.KEY_LEFT: "LEFT", curses.KEY_RIGHT: "RIGHT",
+                      curses.KEY_UP: "UP", curses.KEY_DOWN: "DOWN"}.get(key, key)
+        action = self.config["keymap"].get(normalized)
+        if action in ("toggle", "next", "previous", "forward", "back", "up", "down", "mute", "restart", "shuffle", "repeat"):
+            self.player.send(action)
+        elif action == "quit":
+            return False
+        elif action == "help" or key == "\x1b":
+            self.help = not self.help if action == "help" else False
+            self.cover.clear()
+        elif action == "lyrics":
+            self.show_lyrics = not self.show_lyrics
+        elif action == "focus":
+            self.focus = not self.focus
+            self.queue_focus = False
+            self.show_lyrics = True
+        elif action == "queue":
+            self.queue_focus = not self.queue_focus
+            self.focus = False
+        elif action == "visualizer":
+            self.show_visual = not self.show_visual
+        elif action == "theme":
+            themes = list(self.themes)
+            self.theme = themes[(themes.index(self.theme) + 1) % len(themes)]
+            self.dynamic_colors = None
+            self.config["dynamic_palette"] = False
+            self.colors()
+            self.cover.clear()
+            self.screen.clear()
+        elif action in ("scroll_up", "scroll_down"):
+            if self.lyrics.result[1] and time.monotonic() >= self.manual_scroll_until:
+                self.scroll = 0
+            self.scroll += -1 if action == "scroll_up" else 1
+            self.manual_scroll_until = time.monotonic() + 5
+        elif action in ("offset_back", "offset_forward"):
+            self.offset += -.5 if action == "offset_back" else .5
+        elif action == "retry":
+            self.lyrics.request(self.player.track, retry=True)
+        elif action == "search":
+            if not self.lyrics.enabled:
+                self.toast("Activa letras en la configuración para buscar")
+            elif self.player.track.title:
+                self.prompt_track = self.player.track
+                self.prompt, self.prompt_value = "title", self.prompt_track.title
+                self.cover.clear()
+        elif action == "export":
+            track = self.player.track
+            key, synced, plain, _ = self.lyrics.result
+            if key != track.lyrics_key() or not (synced or plain):
+                self.toast("No hay letras cargadas para exportar")
+            else:
+                self.prompt_track = track
+                self.export_snapshot = (list(synced), list(plain))
+                self.prompt, self.prompt_value = "export", self.config["export_dir"]
+                self.cover.clear()
+        elif action == "open" and not self.player.track.player and shutil.which("cider"):
+            subprocess.Popen(["cider"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+
+    def run(self):
+        curses.curs_set(0)
+        self.screen.keypad(True)
+        self.screen.timeout(33)
+        curses.set_escdelay(25)
+        if self.config["mouse"]:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mouseinterval(0)
+        self.colors()
+        try:
+            while not self.player.stop.is_set():
+                track = self.player.track
+                if track.identity != self.old_identity:
+                    self.old_identity, self.scroll, self.offset = track.identity, 0, self.config["lyrics_offset"]
+                    self.changed_at = time.monotonic()
+                    self.progress_value = track.elapsed() / track.length if track.length else 0.
+                    if track.title and self.config["notifications"]:
+                        self.toast(track.title + " — " + track.artist)
+                if self.activity and self.config["dynamic_palette"] and self.activity.palette != self.dynamic_colors:
+                    self.dynamic_colors = self.activity.palette
+                    self.colors()
+                self.fade()
+                self.lyrics.request(track)
+                self.render()
+                try:
+                    key = self.screen.get_wch()
+                except curses.error:
+                    continue
+                if not self.key(key):
+                    break
+        finally:
+            self.cover.clear()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="amui · Cider, portada, CAVA y letras sincronizadas")
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--config", help="ruta de configuración TOML")
+    parser.add_argument("--init-config", action="store_true", help="crear config.toml sin sobrescribir")
+    parser.add_argument("--check-config", action="store_true", help="validar preferencias y salir")
+    parser.add_argument("--connect-cider", action="store_true", help="conectar el token de la API local")
+    parser.add_argument("--history", nargs="?", const=20, type=int, metavar="N", help="últimas N canciones")
+    parser.add_argument("--mini", action="store_true", help="interfaz de dos líneas")
+    parser.add_argument("--dynamic-palette", action="store_true", default=None, help="colores de la portada")
+    parser.add_argument("--theme", help="tema integrado o personalizado")
+    parser.add_argument("--no-lyrics", action="store_true", default=None, help="no consultar LRCLIB")
+    parser.add_argument("--no-cava", action="store_true", default=None, help="no iniciar el visualizador")
+    parser.add_argument("--player", help="nombre MPRIS exacto; por defecto chromium.instance*")
+    parser.add_argument("--cava-input", choices=("pulse", "pipewire"))
+    options = parser.parse_args()
+    try:
+        if options.init_config:
+            path = Path(options.config).expanduser() if options.config else config_dir() / "config.toml"
+            sample = Path(__file__).resolve().parents[1] / "share/amui/config.example.toml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as file:
+                file.write(sample.read_text())
+            print("Configuración creada:", path)
+            return 0
+        conf = load_config(Path(options.config).expanduser() if options.config else None)
+        options.theme = options.theme or conf["theme"]
+        if options.theme not in {**THEMES, **conf["themes"]}:
+            raise ValueError("Tema desconocido: " + options.theme)
+        options.no_lyrics = options.no_lyrics if options.no_lyrics is not None else not conf["lyrics"]
+        options.no_cava = options.mini or (options.no_cava if options.no_cava is not None else not conf["cava"])
+        options.cava_input = options.cava_input or conf["cava_input"]
+        if options.dynamic_palette is not None:
+            conf["dynamic_palette"] = options.dynamic_palette
+        options.config_data = conf
+        if options.check_config:
+            print("Configuración válida · tema:", options.theme)
+            return 0
+        if options.history is not None:
+            if not 1 <= options.history <= 10000:
+                raise ValueError("--history acepta entre 1 y 10000 canciones")
+            rows = History().recent(options.history)
+            for row in rows:
+                print(clean(f"{row['timestamp']}  {row['title']} — {row['artist']}  [{row['album']}]"))
+            if not rows:
+                print("Todavía no hay canciones en el historial.")
+            return 0
+        if options.connect_cider:
+            connect_cider(conf)
+            return 0
+    except (OSError, ValueError) as error:
+        parser.exit(1, "amui: " + str(error) + "\n")
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        parser.exit(1, "Abre amui en una terminal interactiva (Kitty para las portadas).\n")
+    if not shutil.which("playerctl"):
+        parser.exit(1, "Falta playerctl. En Arch: sudo pacman -S playerctl\n")
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGHUP, lambda *_: stop.set())
+    player, lyrics, spectrum = Player(stop, options.player), Lyrics(stop, not options.no_lyrics), Spectrum(
+        stop, not options.no_cava, options.cava_input)
+    extras = Extras(stop, player, conf)
+    player.extras = extras
+    activity = Activity(stop, player, conf, {**THEMES, **conf["themes"]}[options.theme])
+    options.activity = activity
+    workers = (player, lyrics, spectrum, extras, activity, activity.scrobbler)
+    for worker in workers:
+        worker.thread.start()
+    try:
+        curses.wrapper(lambda screen: UI(screen, player, lyrics, spectrum, options).run())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        # Terminating the producer unblocks its reader; that thread owns cleanup.
+        if spectrum.process and spectrum.process.poll() is None:
+            spectrum.process.terminate()
+        spectrum.thread.join(timeout=2)
+        activity.thread.join(timeout=1)
+        activity.scrobbler.thread.join(timeout=1)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
