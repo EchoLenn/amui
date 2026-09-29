@@ -25,15 +25,22 @@ from dataclasses import dataclass, replace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib/amui"))
 from features import (Activity, Extras, History, KEYS, config_dir, load_config, connect_cider,
-                      detect_cover, inline_image, export_lyrics, nearest_color, rgb, smooth)
+                      detect_cover, inline_image, export_lyrics, nearest_color, rgb, smooth, parse_color, readable)
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 SEP = "\x1f"
 THEMES = {
     "nocturne": (234, 255, 244, 239, 211, 80, 183),
     "ember": (234, 230, 244, 239, 209, 222, 173),
     "ice": (234, 255, 244, 239, 81, 153, 111),
 }
+THEMES.update({name: tuple(parse_color(c) for c in colors.split()) for name, colors in {
+    "sakura": "#1e1b2e #f8e8ee #aaa0b8 #756580 #e8a0bf #bca5ee #f1c9ae",
+    "ocean": "#0d1b2a #e0e1dd #9bafbf #506b80 #48cae4 #90e0ef #b8b8ff",
+    "sunset": "#1a1423 #ffecd2 #bca9b4 #80677c #ff6b6b #ffb86c #da9bff",
+    "forest": "#0b1a0b #d4e7c5 #a0b49b #506b50 #6bcb77 #b5d98a #80cbc4",
+    "mono": "#1a1a1a #e0e0e0 #aaaaaa #777777 #ffffff #cccccc #aaaaaa",
+}.items()})
 
 
 def clean(value):
@@ -500,6 +507,90 @@ class UI:
         self.progress_time = time.monotonic()
         self.dynamic_colors = None
         self.manual_scroll_until = 0
+        self.theme_menu = False
+        self.theme_index = 0
+        self.theme_snapshot = None
+        self.color_target = None
+        self.color_origin = None
+        self.color_started = 0
+        self.config_check_at = 0
+        self.config_path = Path(getattr(options, "config", None) or config_dir() / "config.toml").expanduser()
+        self.config_stamp = self.theme_file_stamp()
+
+    def theme_file_stamp(self):
+        try:
+            stat = self.config_path.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    def reload_themes(self):
+        now = time.monotonic()
+        if now < self.config_check_at or self.theme_menu:
+            return
+        self.config_check_at = now + 5
+        stamp = self.theme_file_stamp()
+        if stamp == self.config_stamp:
+            return
+        self.config_stamp = stamp
+        try:
+            conf = load_config(self.config_path)
+            themes = {**THEMES, **conf["themes"]}
+            if conf["theme"] not in themes:
+                raise ValueError("Tema desconocido: " + conf["theme"])
+        except (OSError, ValueError) as error:
+            self.toast("Temas sin cambios: " + str(error))
+            return
+        self.themes = themes
+        self.config["themes"] = conf["themes"]
+        if self.theme not in themes:
+            self.theme = conf["theme"]
+        if not self.config["dynamic_palette"]:
+            self.transition_to(self.themes[self.theme])
+        self.toast("Temas recargados · otras preferencias requieren reiniciar")
+
+    def transition_to(self, target):
+        target = tuple(target)
+        if target == self.color_target:
+            return
+        self.color_origin = self.dynamic_colors or self.themes[self.theme]
+        self.color_target, self.color_started = target, time.monotonic()
+
+    def animate_colors(self):
+        if self.color_target is None or self.dynamic_colors == self.color_target:
+            return
+        amount = min(1., time.monotonic() - self.color_started) if self.config["animations"] else 1.
+        values = tuple(nearest_color(tuple(round(a + (b-a)*amount) for a, b in zip(rgb(x), rgb(y))))
+                       for x, y in zip(self.color_origin, self.color_target)) if amount < 1 else self.color_target
+        if amount < 1:
+            values = (values[0], *(readable(rgb(c), values[0], 3 if i == 3 else 4.5)
+                                      for i, c in enumerate(values[1:], 1)))
+        if values != self.dynamic_colors:
+            self.dynamic_colors = values
+            self.colors()
+
+    def theme_panel(self):
+        self.art_rect = None
+        self.screen.erase()
+        h, w = self.screen.getmaxyx()
+        names = list(self.themes)
+        if h < 8 or w < 32:
+            self.text(0, 0, "TEMA " + names[self.theme_index], 4, True, w - 1)
+            self.text(1, 0, "↑↓ elegir · Enter · Esc", 2, limit=w - 1)
+            return
+        self.box(1, 1, h - 2, w - 2, "TEMAS · VISTA PREVIA")
+        count = max(1, h - 7)
+        start = min(max(0, self.theme_index - count + 1), max(0, len(names) - count))
+        for row, name in enumerate(names[start:start+count], 3):
+            self.text(row, 3, ("› " if name == names[self.theme_index] else "  ") + name, 4, True, min(20, w - 5))
+            if w >= 48 and curses.has_colors() and curses.COLORS >= 256:
+                for j, color in enumerate(self.themes[name]):
+                    pair = 16 + (row-3)*7+j
+                    if pair < curses.COLOR_PAIRS:
+                        curses.init_pair(pair, color, color)
+                        self.palette[pair] = curses.color_pair(pair)
+                        self.text(row, 24+j*3, "██", pair)
+        self.text(h-3, 3, "↑↓ vista previa · Enter aplicar · Esc cancelar", 2, limit=w-6)
 
     def toast(self, text):
         self.toast_text, self.toast_until = text, time.monotonic() + 3
@@ -742,6 +833,10 @@ class UI:
         screen.erase()
         self.art_rect = None
         self.progress_rect = self.lyrics_rect = None
+        if self.theme_menu:
+            self.theme_panel()
+            screen.refresh()
+            return
         if getattr(self.options, "mini", False):
             self.mini(track, w)
             if self.prompt:
@@ -797,19 +892,33 @@ class UI:
             labels = dict(toggle="play / pausa", next="siguiente", previous="anterior", forward="adelantar 5s",
                 back="retroceder 5s", up="subir volumen", down="bajar volumen", mute="mute / restaurar",
                 restart="reiniciar pista", shuffle="shuffle", repeat="repeat", quit="salir", help="ayuda",
-                lyrics="mostrar letras", focus="letras ampliadas", visualizer="mostrar CAVA", theme="cambiar tema",
+                lyrics="mostrar letras", focus="letras ampliadas", visualizer="mostrar CAVA", theme="cambiar tema", theme_picker="selector de temas",
                 scroll_up="subir letras", scroll_down="bajar letras", offset_back="offset −0.5s",
                 offset_forward="offset +0.5s", retry="reintentar letras", open="abrir Cider",
                 search="buscar letras", export="guardar letras", queue="cola ampliada")
-            rows = [f"{self.binding(a):12s} {label}" for a, label in labels.items()]
+            groups = {
+                "REPRODUCCIÓN": "toggle next previous forward back up down mute restart shuffle repeat",
+                "NAVEGACIÓN": "queue open quit help",
+                "LETRAS": "lyrics focus search export scroll_up scroll_down offset_back offset_forward retry",
+                "APARIENCIA": "visualizer theme theme_picker",
+            }
+            rows = []
+            for group, actions in groups.items():
+                rows.append((group, ""))
+                rows.extend((self.binding(a), labels[a]) for a in actions.split())
             columns, step = (2 if w >= 90 else 1), (2 if h >= 36 else 1)
             count = max(1, (h - 8) // step)
             pages = max(1, math.ceil(len(rows) / (count * columns)))
             self.help_page %= pages
             visible = rows[self.help_page * count * columns:(self.help_page + 1) * count * columns]
             col_width = (w - 10) // columns
-            for i, line in enumerate(visible):
-                self.text(4 + (i % count) * step, 5 + (i // count) * col_width, line, limit=col_width - 2)
+            for i, (binding, label) in enumerate(visible):
+                y, x = 4 + (i % count) * step, 5 + (i // count) * col_width
+                if not label:
+                    self.text(y, x, binding, 4, True, col_width-2)
+                else:
+                    self.text(y, x, binding, 5, True, min(12, col_width-2))
+                    self.text(y, x+13, label, 1, limit=col_width-15)
             self.text(h - 4, 5, f"PgUp/PgDn {self.help_page + 1}/{pages} · Esc cerrar · mouse: seek / scroll", 2, limit=w - 10)
         if time.monotonic() < self.toast_until:
             self.text(2, 3, "♪ " + self.toast_text, 5, True, w - 6)
@@ -825,6 +934,21 @@ class UI:
         self.cover.show(track.art, self.art_rect)
 
     def key(self, key):
+        if self.theme_menu:
+            names = list(self.themes)
+            if key in (curses.KEY_UP, curses.KEY_DOWN):
+                self.theme_index = (self.theme_index + (1 if key == curses.KEY_DOWN else -1)) % len(names)
+                self.theme = names[self.theme_index]
+                self.transition_to(self.themes[self.theme])
+            elif key in ("\n", "\r", curses.KEY_ENTER):
+                self.theme_menu = False
+                self.toast("Tema: " + self.theme)
+            elif key == "\x1b":
+                self.theme, colors, enabled = self.theme_snapshot
+                self.config["dynamic_palette"] = enabled
+                self.transition_to(colors)
+                self.theme_menu = False
+            return True
         if self.prompt:
             return self.prompt_key(key)
         if self.help and key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
@@ -856,12 +980,21 @@ class UI:
             self.show_visual = not self.show_visual
         elif action == "theme":
             themes = list(self.themes)
+            previous = self.dynamic_colors or self.themes[self.theme]
             self.theme = themes[(themes.index(self.theme) + 1) % len(themes)]
-            self.dynamic_colors = None
+            self.dynamic_colors = previous
             self.config["dynamic_palette"] = False
-            self.colors()
+            self.transition_to(self.themes[self.theme])
             self.cover.clear()
             self.screen.clear()
+        elif action == "theme_picker":
+            self.theme_snapshot = (self.theme, self.dynamic_colors or self.themes[self.theme], self.config["dynamic_palette"])
+            self.dynamic_colors = self.theme_snapshot[1]
+            self.theme_index = list(self.themes).index(self.theme)
+            self.config["dynamic_palette"] = False
+            self.transition_to(self.themes[self.theme])
+            self.theme_menu = True
+            self.cover.clear()
         elif action in ("scroll_up", "scroll_down"):
             if self.lyrics.result[1] and time.monotonic() >= self.manual_scroll_until:
                 self.scroll = 0
@@ -911,9 +1044,10 @@ class UI:
                     self.progress_value = track.elapsed() / track.length if track.length else 0.
                     if track.title and self.config["notifications"]:
                         self.toast(track.title + " — " + track.artist)
-                if self.activity and self.config["dynamic_palette"] and self.activity.palette != self.dynamic_colors:
-                    self.dynamic_colors = self.activity.palette
-                    self.colors()
+                self.reload_themes()
+                if self.activity and self.config["dynamic_palette"]:
+                    self.transition_to(self.activity.palette)
+                self.animate_colors()
                 self.fade()
                 self.lyrics.request(track)
                 self.render()
@@ -938,6 +1072,7 @@ def main():
     parser.add_argument("--mini", action="store_true", help="interfaz de dos líneas")
     parser.add_argument("--dynamic-palette", action="store_true", default=None, help="colores de la portada")
     parser.add_argument("--theme", help="tema integrado o personalizado")
+    parser.add_argument("--list-themes", action="store_true", help="listar temas y colores")
     parser.add_argument("--no-lyrics", action="store_true", default=None, help="no consultar LRCLIB")
     parser.add_argument("--no-cava", action="store_true", default=None, help="no iniciar el visualizador")
     parser.add_argument("--player", help="nombre MPRIS exacto; por defecto chromium.instance*")
@@ -953,6 +1088,11 @@ def main():
             print("Configuración creada:", path)
             return 0
         conf = load_config(Path(options.config).expanduser() if options.config else None)
+        if options.list_themes:
+            for name, colors in {**THEMES, **conf["themes"]}.items():
+                swatches = " ".join((f"\033[48;5;{c}m  \033[0m" if sys.stdout.isatty() and not os.environ.get("NO_COLOR") else "#%02x%02x%02x" % rgb(c)) for c in colors)
+                print(f"{name:12s} {swatches}")
+            return 0
         options.theme = options.theme or conf["theme"]
         if options.theme not in {**THEMES, **conf["themes"]}:
             raise ValueError("Tema desconocido: " + options.theme)

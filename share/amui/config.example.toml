@@ -1,4 +1,4 @@
-# amui v0.3 · ~/.config/amui/config.toml
+# amui v0.4 · ~/.config/amui/config.toml
 # CLI > este archivo > valores predeterminados. Python 3.11+.
 theme = "nocturne"
 cava_input = "pulse"
@@ -10,6 +10,7 @@ history = true
 notifications = true
 animations = true
 dynamic_palette = true
+palette_light = false # permitir fondo claro con portadas predominantemente claras
 mouse = true
 cover_protocol = "auto" # auto / kitty / iterm / sixel / none
 export_dir = "~/Music/amui-lyrics"
@@ -20,6 +21,7 @@ repeat = "e"
 search = "/"
 export = "S"
 queue = "Q"
+theme_picker = "T"
 # Se puede usar una tecla o una lista: forward = ["RIGHT", "l"]
 # Nombres: SPACE LEFT RIGHT UP DOWN. No se admiten teclas duplicadas.
 

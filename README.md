@@ -3,6 +3,29 @@
 Una sala de escucha en tu terminal: Cider reproduce Apple Music; **amui** pone
 la portada, los controles, el espectro de audio y las letras al frente.
 
+## Lo nuevo en 0.4
+
+- `T` abre el selector de temas: flechas para vista previa, Enter para aplicar,
+  Esc para recuperar el tema y el modo dinámico anteriores. `t` conserva el ciclo rápido.
+- Cinco temas nuevos: sakura, ocean, sunset, forest y mono.
+- `amui --list-themes` muestra temas integrados y personalizados con sus siete
+  colores; al redirigir la salida muestra valores hexadecimales.
+- Paletas de portada con K-means (hasta cinco colores), fondo adaptado y contraste
+  mínimo de 4.5:1 para texto y acentos. Se conserva el modo oscuro; `palette_light = true`
+  permite fondos claros cuando predominan colores claros en la portada.
+- Caché por contenido de imagen en `$XDG_CACHE_HOME/amui/palettes.json`, con un
+  máximo de 256 entradas. Una portada modificada en la misma ruta se vuelve a procesar.
+- Transiciones de paleta de un segundo; `animations = false` aplica el cambio de inmediato.
+  Los colores se aproximan a la paleta de 256 colores del terminal.
+- Recarga de las definiciones `[themes]` cada cinco segundos. Los errores de TOML
+  conservan la última configuración válida y se muestran en pantalla. El tema
+  elegido se mantiene si todavía existe; las otras preferencias requieren reiniciar.
+- Ayuda agrupada en reproducción, navegación, letras y apariencia.
+- Sixel intenta ImageMagick si Chafa no puede decodificar la imagen.
+
+La elección interactiva dura durante la sesión; para guardarla, cambia `theme`
+en tu archivo TOML. ImageMagick sigue siendo necesario para extraer la paleta.
+
 ## Lo nuevo en 0.3
 
 Se implementan las 13 propuestas de `Ideas.md`:

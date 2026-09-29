@@ -59,10 +59,14 @@ Las opciones y atajos completos están en [README.md](README.md) y
 
 ## Estado de calidad
 
-La suite tiene 35 pruebas. La última ejecución aprobó 34; una prueba de
-generación Sixel falló porque no pudo producir la portada Sixel en este entorno.
-No afecta las rutas de Kitty ni iTerm2/WezTerm, pero queda como pendiente antes
-de considerar Sixel verificado en todos los equipos.
+La v0.4 incorpora selector visual (`T`), cinco temas nuevos, listado de temas,
+paletas por K-means, caché por contenido, contraste, transiciones y recarga de
+temas. La ayuda está agrupada por categorías.
+
+La suite tiene 42 pruebas, incluyendo interacción en terminal PTY, cancelación
+del selector, recarga inválida, caché e invalidación de portada y contraste.
+Las 42 pasan en este entorno. El fallo Sixel se debía a que Chafa no podía
+decodificar el PPM de prueba; ahora se intenta ImageMagick cuando Chafa falla.
 
 ## Publicación
 

@@ -27,7 +27,7 @@ KEYS = {
     "forward": ["RIGHT", "l"], "back": ["LEFT", "h"],
     "up": ["UP", "k"], "down": ["DOWN", "j"], "mute": ["m"], "restart": ["r"],
     "shuffle": ["s"], "repeat": ["e"], "quit": ["q"], "help": ["?"],
-    "lyrics": ["L"], "focus": ["f"], "visualizer": ["v"], "theme": ["t"],
+    "lyrics": ["L"], "focus": ["f"], "visualizer": ["v"], "theme": ["t"], "theme_picker": ["T"],
     "scroll_up": ["["], "scroll_down": ["]"], "offset_back": [","], "offset_forward": ["."],
     "retry": ["R"], "open": ["o"], "search": ["/"], "export": ["S"], "queue": ["Q"],
 }
@@ -79,7 +79,7 @@ def load_config(path=None):
         raise ValueError(f"No se pudo leer {path}: {error}") from error
     defaults = dict(theme="nocturne", cava_input="pulse", lyrics_offset=0.,
                     lyrics=True, cava=True, queue=True, history=True, notifications=True,
-                    animations=True, dynamic_palette=False, mouse=True, cover_protocol="auto",
+                    animations=True, dynamic_palette=False, palette_light=False, mouse=True, cover_protocol="auto",
                     export_dir=str(Path.home() / "Music/amui-lyrics"))
     allowed = set(defaults) | {"keybinds", "themes", "cider", "scrobble"}
     if set(data) - allowed:
@@ -363,29 +363,84 @@ class History:
             return []
 
 
-def dominant_palette(art, fallback):
+def contrast(a, b):
+    def luminance(c):
+        values = [v / 3294.6 if v <= 10 else ((v / 255 + .055) / 1.055) ** 2.4 for v in c]
+        return sum(v * weight for v, weight in zip(values, (.2126, .7152, .0722)))
+    x, y = sorted((luminance(a), luminance(b)))
+    return (y + .05) / (x + .05)
+
+
+def readable(color, background, minimum=4.5):
+    candidates = [i for i in range(16, 256) if contrast(rgb(i), rgb(background)) >= minimum]
+    return min(candidates, key=lambda i: sum((a-b)**2 for a, b in zip(rgb(i), color)))
+
+
+def cluster_colors(pixels, k=5):
+    """Deterministic farthest-point initialization and bounded Lloyd iterations."""
+    centers = [pixels[0]]
+    for _ in range(k - 1):
+        candidate = max(pixels, key=lambda p: min(sum((a-b)**2 for a, b in zip(p, c)) for c in centers))
+        if candidate in centers:
+            break
+        centers.append(candidate)
+    for _ in range(12):
+        groups = [[] for _ in centers]
+        for p in pixels:
+            i = min(range(len(centers)), key=lambda i: sum((a-b)**2 for a, b in zip(p, centers[i])))
+            groups[i].append(p)
+        updated = [tuple(round(sum(p[j] for p in group)/len(group)) for j in range(3)) if group else c
+                   for group, c in zip(groups, centers)]
+        if updated == centers:
+            break
+        centers = updated
+    return [c for _, c in sorted(zip(map(len, groups), centers), reverse=True)]
+
+
+def dominant_palette(art, fallback, light=False):
     path = urllib.parse.unquote(urllib.parse.urlparse(art).path) if art.startswith("file://") else art
     tool = shutil.which("magick") or shutil.which("convert")
     if not tool or not path or not Path(path).is_file():
         return fallback
     try:
+        signature = hashlib.sha256(Path(path).read_bytes()).hexdigest() + (":light" if light else ":dark")
+        cache = cache_dir() / "palettes.json"
+        try:
+            saved = json.loads(cache.read_text())
+            if not isinstance(saved, dict):
+                saved = {}
+        except (OSError, ValueError):
+            saved = {}
+        cached = saved.get(signature)
+        if isinstance(cached, list) and len(cached) == 7 and all(type(i) is int and 16 <= i <= 255 for i in cached):
+            return tuple(cached)
         raw = subprocess.run([tool, path + "[0]", "-resize", "32x32!", "-alpha", "off", "-depth", "8", "rgb:-"],
                              capture_output=True, timeout=3)
         if raw.returncode or len(raw.stdout) != 32 * 32 * 3:
             return fallback
-        counts = {}
-        for i in range(0, len(raw.stdout), 3):
-            c = tuple(raw.stdout[i:i + 3])
-            hue, saturation, value = colorsys.rgb_to_hsv(*(v / 255 for v in c))
-            if saturation > .25 and value > .2:
-                bucket = round(hue * 24) % 24
-                counts[bucket] = counts.get(bucket, 0) + 1
-        if not counts:
-            return fallback
-        hue = max(counts, key=counts.get) / 24
-        accents = [nearest_color(tuple(round(v * 255) for v in colorsys.hsv_to_rgb((hue + delta) % 1, .52, .98)))
-                   for delta in (0, .12, -.12)]
-        return (*fallback[:4], *accents)
+        clusters = cluster_colors([tuple(raw.stdout[i:i+3]) for i in range(0, len(raw.stdout), 3)])
+        dominant = clusters[0]
+        bright = light and sum(dominant) / 3 > 160
+        bg = nearest_color(tuple(round(220 + v * .1) if bright else round(v * .09 + 9) for v in dominant))
+        fg = readable((24, 24, 30) if bright else (242, 242, 246), bg, 7)
+        muted = readable((115, 115, 130), bg)
+        border = readable(tuple(round(v * .5 + 50) for v in dominant), bg, 3)
+        accents = [readable(c, bg) for c in clusters[:3]]
+        while len(accents) < 3:
+            hue, sat, _ = colorsys.rgb_to_hsv(*(v / 255 for v in dominant))
+            c = tuple(round(v * 255) for v in colorsys.hsv_to_rgb((hue + .12 * len(accents)) % 1, max(.35, sat), .9))
+            accents.append(readable(c, bg))
+        palette = (bg, fg, muted, border, *accents)
+        saved[signature] = palette
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", dir=cache.parent, delete=False) as file:
+                json.dump(dict(list(saved.items())[-256:]), file)
+                temporary = file.name
+            os.replace(temporary, cache)
+        except OSError:
+            pass
+        return palette
     except (OSError, subprocess.TimeoutExpired):
         return fallback
 
@@ -412,16 +467,21 @@ def inline_image(path, rect, protocol):
         return (f"\033]1337;File=inline=1;size={len(data)};width={w};height={h};preserveAspectRatio=1:".encode()
                 + base64.b64encode(data) + b"\a")
     if protocol == "sixel":
+        commands = []
         if shutil.which("chafa"):
-            args = ["chafa", "--format=sixels", f"--size={w}x{h}", "--animate=off", path]
-        elif shutil.which("magick"):
-            args = ["magick", path + "[0]", "-resize", f"{w * 8}x{h * 16}", "sixel:-"]
-        else:
+            commands.append(["chafa", "--format=sixels", f"--size={w}x{h}", "--animate=off", path])
+        if shutil.which("magick"):
+            commands.append(["magick", path + "[0]", "-resize", f"{w * 8}x{h * 16}", "sixel:-"])
+        if not commands:
             raise ValueError("Sixel necesita chafa o ImageMagick")
-        result = subprocess.run(args, capture_output=True, timeout=3)
-        if result.returncode:
-            raise ValueError("No se pudo generar la portada Sixel")
-        return result.stdout
+        for args in commands:
+            try:
+                result = subprocess.run(args, capture_output=True, timeout=3)
+                if not result.returncode and result.stdout:
+                    return result.stdout
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        raise ValueError("No se pudo generar la portada Sixel")
     return b""
 
 
@@ -609,9 +669,16 @@ class Activity:
         while not self.stop.is_set():
             track = self.player.track
             self.observe(track)
-            if self.config["dynamic_palette"] and (track.identity, track.art) != self.art:
-                self.art = (track.identity, track.art)
-                self.palette = dominant_palette(track.art, self.palette)
+            path = urllib.parse.unquote(urllib.parse.urlparse(track.art).path) if track.art.startswith("file://") else track.art
+            try:
+                stat = Path(path).stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp = None
+            signature = (track.identity, track.art, stamp, self.config["palette_light"])
+            if self.config["dynamic_palette"] and signature != self.art:
+                self.art = signature
+                self.palette = dominant_palette(track.art, self.palette, self.config["palette_light"])
             self.stop.wait(.25)
 
 

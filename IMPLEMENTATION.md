@@ -1,5 +1,31 @@
 # Ideas.md — alcance y verificación
 
+## Actualización v0.4 — temas y colores
+
+Alcance acordado de next-features.md: selector, cinco temas, paleta por portada,
+caché, transiciones, recarga de temas y ayuda categorizada. Biblioteca, playlists,
+favoritos, estadísticas, socket y hooks quedan para otra iteración.
+
+- Selector `T`: vista previa, Enter aplica, Esc restaura tema y modo dinámico.
+  `t` sigue recorriendo los temas. Prueba PTY verifica apertura y selección.
+- Sakura, ocean, sunset, forest y mono disponibles junto a temas personalizados.
+  `--list-themes` funciona sin TTY, con colores hexadecimales en salida redirigida.
+- K-means determinista con hasta cinco centroides y doce iteraciones; lectura de
+  píxeles con ImageMagick. Texto/acento con contraste mínimo 4.5:1 después de
+  aproximar a 256 colores. Fondo oscuro por defecto y claro opcional.
+- Caché de 256 paletas por hash del contenido; prueba con cambio de imagen en
+  la misma ruta. El worker detecta modificaciones por fecha/tamaño.
+- Transición de un segundo; pruebas del destino final y animaciones desactivadas.
+- Revisión del TOML cada cinco segundos, sólo para definiciones de temas;
+  un archivo inválido conserva el último conjunto válido.
+- Ayuda por reproducción, navegación, letras y apariencia, con teclas resaltadas.
+- La prueba Sixel pasa con fallback de Chafa a ImageMagick. Chafa instalado en
+  este entorno no incluye lector PPM; la prueba usa ese formato.
+- 42 pruebas aprobadas, incluyendo las anteriores y siete nuevas de temas.
+- Instalación local verificada: versión 0.4.0, listado de temas y configuración válida.
+
+Las secciones siguientes conservan la evidencia histórica de v0.3.
+
 Objetivo: implementar los 13 elementos de Ideas.md, conservando reproducción,
 portadas, letras y CAVA. Ideas.md se conserva como referencia del usuario.
 
