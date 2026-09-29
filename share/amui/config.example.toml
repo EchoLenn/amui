@@ -1,6 +1,10 @@
-# amui v0.4 · ~/.config/amui/config.toml
-# CLI > este archivo > valores predeterminados. Python 3.11+.
+# amui v0.5.1 · ~/.config/amui/config.toml
+# CLI > selección guardada > este archivo > predeterminados. Python 3.11+.
+# Editar este archivo invalida la selección guardada.
 theme = "nocturne"
+theme_source = "auto" # auto / cover / fixed / custom / pywal
+palette_mode = "extract" # extract / complementary / contrast
+# pywal_file = "~/.cache/wal/colors.json"
 cava_input = "pulse"
 lyrics_offset = 0.0
 lyrics = true
@@ -22,6 +26,7 @@ search = "/"
 export = "S"
 queue = "Q"
 theme_picker = "T"
+music = "b"
 # Se puede usar una tecla o una lista: forward = ["RIGHT", "l"]
 # Nombres: SPACE LEFT RIGHT UP DOWN. No se admiten teclas duplicadas.
 

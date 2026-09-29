@@ -3,6 +3,28 @@
 Una sala de escucha en tu terminal: Cider reproduce Apple Music; **amui** pone
 la portada, los controles, el espectro de audio y las letras al frente.
 
+## Lo nuevo en 0.5.1
+
+- **Fuentes de color y temas interactivos (`T`)**:
+  1. **Carátula**: modos de extracción K-means, colores complementarios y alto contraste.
+  2. **Temas fijos**: selección con vista previa de los ocho temas integrados.
+  3. **Tema personalizado**: temas del TOML (incluido aurora en el ejemplo) y editor de siete colores `#RRGGBB`, guardados sin perder sus valores en `custom-theme.json`.
+  4. **Pywal**: lectura automática y recarga en caliente al detectar cambios en `~/.cache/wal/colors.json`.
+- **Elegir y buscar música desde amui (`b`)**:
+  - Búsqueda en el catálogo de Apple Music o en tu Biblioteca (`Tab` alterna la fuente).
+  - Filtro por tipo: Canciones, Álbumes o Playlists (`←` / `→`).
+  - Escribe y pulsa Enter para buscar; después usa ↑↓ y Enter para reproducir.
+    `+` añade a la cola, `n` añade a continuación y `N` agrega más resultados sin borrar los anteriores.
+  - `/` vuelve a editar la consulta, Ctrl+U la limpia y Esc cierra el navegador.
+    La biblioteca es la de tu cuenta de Apple Music, no una carpeta de archivos locales.
+
+Las selecciones de apariencia se guardan junto al TOML en `config.appearance.json`.
+Editar manualmente el TOML invalida esa selección guardada; los argumentos CLI
+tienen prioridad. Esc desde el menú principal de temas cancela la vista previa.
+Pywal conserva los últimos colores válidos si su archivo desaparece o contiene errores.
+Los colores en pantalla siguen aproximándose a 256 colores; el archivo personalizado
+conserva los hexadecimales originales. Los respaldos `legacy/` permanecen intactos.
+
 ## Lo nuevo en 0.4
 
 - `T` abre el selector de temas: flechas para vista previa, Enter para aplicar,
@@ -22,9 +44,6 @@ la portada, los controles, el espectro de audio y las letras al frente.
   elegido se mantiene si todavía existe; las otras preferencias requieren reiniciar.
 - Ayuda agrupada en reproducción, navegación, letras y apariencia.
 - Sixel intenta ImageMagick si Chafa no puede decodificar la imagen.
-
-La elección interactiva dura durante la sesión; para guardarla, cambia `theme`
-en tu archivo TOML. ImageMagick sigue siendo necesario para extraer la paleta.
 
 ## Lo nuevo en 0.3
 
@@ -60,7 +79,8 @@ Se implementan las 13 propuestas de `Ideas.md`:
   seek, volumen, mute, restart y controles de reproducción.
 
 La interfaz usa Python 3.11+ y `curses`, con bibliotecas estándar. MPRIS, letras y CAVA
-trabajan en segundo plano. El Bash anterior está intacto en `legacy/amui.bash`.
+trabajan en segundo plano.
+La búsqueda requiere la API local de Cider conectada: `amui --connect-cider`.
 
 ## Requisitos e instalación
 
@@ -131,6 +151,8 @@ no modifica tu configuración personal de CAVA.
 | `L` (mayúscula) | Mostrar / ocultar panel de letras |
 | `f` | Letras a pantalla completa; también sirve en ventanas angostas |
 | `v` | Mostrar / ocultar visualizador |
+| `b` | Buscar / elegir música (Apple Music y biblioteca) |
+| `T` | Selector de temas y fuentes de color (carátula, fijos, personal, pywal) |
 | `t` | Cambiar paleta |
 | `[` / `]` | Desplazar letras; en LRC vuelve al seguimiento después de 5 s |
 | `,` / `.` | Ajustar sincronización −0.5 / +0.5 segundos |
@@ -243,8 +265,6 @@ URL remota no se descargan en esta versión.
 bin/amui              Interfaz y servicios; Python estándar
 lib/amui/features.py   Config, cola/API, historial, scrobbling y portadas
 share/amui/           Configuración de ejemplo instalada
-legacy/amui.bash       Versión Bash original, sin cambios
-legacy/amui-v0.2.py    Respaldo de la versión Python anterior
 tests/                Pruebas unitarias, HTTP local y terminal PTY
 docs/                 Configuración y detalles de integración
 Makefile              check / install / uninstall
@@ -253,7 +273,6 @@ Makefile              check / install / uninstall
 ```bash
 make check
 ./bin/amui --no-lyrics --no-cava
-bash legacy/amui.bash
 ```
 
 La autodetección prioriza un `chromium.instance*` en reproducción; si ninguno

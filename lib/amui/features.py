@@ -29,7 +29,7 @@ KEYS = {
     "shuffle": ["s"], "repeat": ["e"], "quit": ["q"], "help": ["?"],
     "lyrics": ["L"], "focus": ["f"], "visualizer": ["v"], "theme": ["t"], "theme_picker": ["T"],
     "scroll_up": ["["], "scroll_down": ["]"], "offset_back": [","], "offset_forward": ["."],
-    "retry": ["R"], "open": ["o"], "search": ["/"], "export": ["S"], "queue": ["Q"],
+    "retry": ["R"], "open": ["o"], "search": ["/"], "export": ["S"], "queue": ["Q"], "music": ["b"],
 }
 COLOR_NAMES = ("background", "foreground", "muted", "border", "accent", "secondary", "tertiary")
 
@@ -80,16 +80,24 @@ def load_config(path=None):
     defaults = dict(theme="nocturne", cava_input="pulse", lyrics_offset=0.,
                     lyrics=True, cava=True, queue=True, history=True, notifications=True,
                     animations=True, dynamic_palette=False, palette_light=False, mouse=True, cover_protocol="auto",
+                    theme_source="auto", palette_mode="extract", pywal_file=str(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home()/".cache"))) / "wal/colors.json"),
                     export_dir=str(Path.home() / "Music/amui-lyrics"))
     allowed = set(defaults) | {"keybinds", "themes", "cider", "scrobble"}
     if set(data) - allowed:
         raise ValueError("Opciones desconocidas: " + ", ".join(sorted(set(data) - allowed)))
     conf = {**defaults, **data}
+    if conf["theme_source"] == "auto":
+        conf["theme_source"] = "cover" if conf["dynamic_palette"] else "fixed"
+    if conf["theme_source"] not in ("cover", "fixed", "custom", "pywal"):
+        raise ValueError("theme_source: cover, fixed, custom o pywal")
+    if conf["palette_mode"] not in ("extract", "complementary", "contrast"):
+        raise ValueError("palette_mode: extract, complementary o contrast")
     for key, default in defaults.items():
         if isinstance(default, bool) and not isinstance(conf[key], bool):
             raise ValueError(f"{key} debe ser true o false")
         if isinstance(default, str) and not isinstance(conf[key], str):
             raise ValueError(f"{key} debe ser texto")
+    conf["dynamic_palette"] = conf["theme_source"] == "cover"
     if conf["cava_input"] not in ("pulse", "pipewire"):
         raise ValueError("cava_input debe ser pulse o pipewire")
     if conf["cover_protocol"] not in ("auto", "kitty", "iterm", "sixel", "none"):
@@ -169,6 +177,38 @@ def read_secret(path):
         return ""
 
 
+def appearance_signature(config_path):
+    try:
+        return hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return "missing"
+
+
+def restore_appearance(conf, config_path, available=None):
+    """A manually edited TOML takes precedence over a previously saved selection."""
+    try:
+        saved = json.loads(Path(config_path).with_suffix(".appearance.json").read_text())
+        if saved.get("config_signature") != appearance_signature(config_path):
+            return
+        if saved.get("theme_source") not in ("cover", "fixed", "custom", "pywal") or saved.get("palette_mode") not in ("extract", "complementary", "contrast"):
+            return
+        if not isinstance(saved.get("theme"), str):
+            return
+        if available is not None and saved["theme"] not in available:
+            return
+        for key in ("theme_source", "palette_mode", "theme"):
+            conf[key] = saved[key]
+        conf["dynamic_palette"] = conf["theme_source"] == "cover"
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def save_appearance(conf, theme, config_path):
+    atomic_json(Path(config_path).with_suffix(".appearance.json"), dict(
+        config_signature=appearance_signature(config_path), theme=theme,
+        theme_source=conf["theme_source"], palette_mode=conf["palette_mode"]))
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, "Redirect refused", headers, fp)
@@ -177,7 +217,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def json_request(url, payload=None, headers=None, form=False, timeout=3):
     body = None if payload is None else (urllib.parse.urlencode(payload).encode() if form
                                         else json.dumps(payload).encode())
-    hdr = {"User-Agent": "amui/0.3", "Accept": "application/json", **(headers or {})}
+    hdr = {"User-Agent": "amui/0.5", "Accept": "application/json", **(headers or {})}
     if body is not None:
         hdr["Content-Type"] = "application/x-www-form-urlencoded" if form else "application/json"
     request = urllib.request.Request(url, data=body, headers=hdr)
@@ -196,6 +236,127 @@ class CiderAPI:
         token = os.environ.get("AMUI_CIDER_TOKEN") or read_secret(self.token_file)
         return json_request(self.url + "/api/v1/playback/" + endpoint, payload,
                             {"apptoken": token} if token else {})
+
+    def music(self, path):
+        if not path.startswith(("/v1/catalog/", "/v1/me/")) or ".." in path:
+            raise ValueError("Ruta de música no válida")
+        token = os.environ.get("AMUI_CIDER_TOKEN") or read_secret(self.token_file)
+        result = json_request(self.url + "/api/v1/amapi/run-v3", {"path": path},
+                              {"apptoken": token} if token else {}, timeout=10)
+        if not isinstance(result, dict) or result.get("errors") or result.get("status") == "error":
+            raise ValueError("Cider no pudo consultar Apple Music")
+        data = result.get("data", result)
+        if not isinstance(data, dict) or data.get("errors"):
+            raise ValueError("Apple Music no devolvió datos válidos")
+        return data
+
+
+class MusicBrowser:
+    """Serial background requests; stale searches cannot replace newer results."""
+    def __init__(self, stop, conf):
+        self.stop, self.api = stop, CiderAPI(conf["cider"])
+        self.jobs = queue.Queue()
+        self.generation = 0
+        self.items, self.next_path = [], ""
+        self.label, self.busy = "Escribe una búsqueda o abre Biblioteca", False
+        self.storefront = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def search(self, term="", library=False, kind="songs", next_path=""):
+        if next_path and self.busy:
+            return
+        self.generation += 1
+        previous = list(self.items) if next_path else []
+        self.items, self.next_path = previous, ""
+        self.label, self.busy = "Buscando…", True
+        self.jobs.put((self.generation, "search", (term, library, kind, next_path, previous)))
+
+    def choose(self, item, action="play-item"):
+        if self.busy:
+            return
+        if action not in ("play-item", "play-later", "play-next"):
+            raise ValueError("Acción de reproducción no válida")
+        if item.get("type") not in ("songs", "albums", "playlists", "library-songs", "library-albums", "library-playlists") or not re.fullmatch(r"[\w.:-]+", str(item.get("id", "")), re.ASCII):
+            raise ValueError("Elemento de música no válido")
+        self.busy, self.label = True, "Enviando a Cider…"
+        self.jobs.put((self.generation, action, dict(item)))
+
+    def lookup(self, term, library, kind, next_path):
+        if kind not in ("songs", "albums", "playlists"):
+            raise ValueError("Tipo de música no válido")
+        resource = ("library-" if library else "") + kind
+        if next_path:
+            path = next_path
+        elif library:
+            path = "/v1/me/library/" + ("search?" + urllib.parse.urlencode({"term":term, "types":resource, "limit":25})
+                                          if term else kind + "?limit=25")
+        else:
+            if not term.strip():
+                return [], ""
+            if not self.storefront:
+                stores = self.api.music("/v1/me/storefront").get("data", [])
+                if not stores or not re.fullmatch("[a-z]{2}", str(stores[0].get("id", ""))):
+                    raise ValueError("No se pudo obtener la región de Apple Music")
+                self.storefront = stores[0]["id"]
+            path = f"/v1/catalog/{self.storefront}/search?" + urllib.parse.urlencode({"term":term, "types":kind, "limit":25})
+        data = self.api.music(path)
+        section = data.get("results", {}).get(resource, {}) if "results" in data else data
+        if not isinstance(section, dict) or not isinstance(section.get("data", []), list):
+            raise ValueError("Lista de música no válida")
+        rows = section.get("data", [])
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            attrs = row.get("attributes", {})
+            if not isinstance(attrs, dict):
+                continue
+            item_type = row.get("type", resource)
+            if re.fullmatch(r"[\w.:-]+", str(row.get("id", "")), re.ASCII) and item_type in ("songs", "albums", "playlists", "library-songs", "library-albums", "library-playlists"):
+                items.append(dict(id=str(row["id"]), type=item_type, title=str(attrs.get("name") or "Sin título"),
+                                  artist=str(attrs.get("artistName") or attrs.get("curatorName") or ""), album=str(attrs.get("albumName") or "")))
+        next_page = section.get("next", "")
+        if not isinstance(next_page, str) or not next_page.startswith(("/v1/catalog/", "/v1/me/")):
+            next_page = ""
+        return items, next_page
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                generation, action, args = self.jobs.get(timeout=.2)
+            except queue.Empty:
+                continue
+            if self.stop.is_set():
+                break
+            if action == "search" and generation != self.generation:
+                continue
+            try:
+                if action == "search":
+                    items, next_path = self.lookup(*args[:4])
+                    if generation == self.generation:
+                        previous = args[4]
+                        seen = {(item["type"], item["id"]) for item in previous}
+                        combined = previous + [item for item in items if (item.get("type"), item.get("id")) not in seen]
+                        self.items, self.next_path = combined, next_path
+                        self.label = f"{len(combined)} resultados" if combined else "Sin resultados · / buscar · Tab biblioteca"
+                else:
+                    result = self.api.request(action, {"type":args["type"], "id":args["id"]})
+                    if isinstance(result, dict) and (result.get("status") == "error" or result.get("errors")):
+                        raise ValueError("Cider rechazó la selección")
+                    if generation == self.generation:
+                        self.label = ("Reproducción solicitada: " if action == "play-item" else "Añadido a cola: ") + args["title"]
+            except urllib.error.HTTPError as error:
+                if generation == self.generation:
+                    self.label = "Conecta Cider: amui --connect-cider" if error.code in (401, 403) else f"Cider no disponible (HTTP {error.code})"
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
+                if generation == self.generation:
+                    self.label = "No se pudo consultar Cider; revisa conexión y suscripción"
+            except Exception:
+                if generation == self.generation:
+                    self.label = "Respuesta inesperada de Cider; vuelve a buscar"
+            finally:
+                if generation == self.generation:
+                    self.busy = False
 
 
 def connect_cider(conf):
@@ -397,13 +558,33 @@ def cluster_colors(pixels, k=5):
     return [c for _, c in sorted(zip(map(len, groups), centers), reverse=True)]
 
 
-def dominant_palette(art, fallback, light=False):
+def pywal_palette(path):
+    try:
+        data = json.loads(Path(path).expanduser().read_text())
+        special, colors = data["special"], data["colors"]
+        values = [special["background"], special["foreground"], colors["color8"], colors["color0"],
+                  colors["color1"], colors["color4"], colors["color5"]]
+        palette = tuple(parse_color(value) for value in values)
+        return (palette[0], *(readable(rgb(c), palette[0], 3 if i == 3 else 4.5) for i, c in enumerate(palette[1:], 1)))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("Pywal: genera colors.json con wal o revisa pywal_file") from error
+
+
+def custom_palette(path):
+    try:
+        values = json.loads(Path(path).read_text())
+        return tuple(parse_color(values[key]) for key in COLOR_NAMES)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("Tema personalizado no válido") from error
+
+
+def dominant_palette(art, fallback, light=False, mode="extract"):
     path = urllib.parse.unquote(urllib.parse.urlparse(art).path) if art.startswith("file://") else art
     tool = shutil.which("magick") or shutil.which("convert")
     if not tool or not path or not Path(path).is_file():
         return fallback
     try:
-        signature = hashlib.sha256(Path(path).read_bytes()).hexdigest() + (":light" if light else ":dark")
+        signature = hashlib.sha256(Path(path).read_bytes()).hexdigest() + (":light" if light else ":dark") + ":" + mode
         cache = cache_dir() / "palettes.json"
         try:
             saved = json.loads(cache.read_text())
@@ -430,14 +611,15 @@ def dominant_palette(art, fallback, light=False):
             hue, sat, _ = colorsys.rgb_to_hsv(*(v / 255 for v in dominant))
             c = tuple(round(v * 255) for v in colorsys.hsv_to_rgb((hue + .12 * len(accents)) % 1, max(.35, sat), .9))
             accents.append(readable(c, bg))
+        if mode in ("complementary", "contrast"):
+            hue, saturation, _ = colorsys.rgb_to_hsv(*(v/255 for v in dominant))
+            offsets = (0, .5, .08) if mode == "complementary" else (0, 1/3, 2/3)
+            accents = [readable(tuple(round(v*255) for v in colorsys.hsv_to_rgb((hue+offset)%1,
+                        max(.65, saturation), .85 if bright else 1)), bg, 7 if mode == "contrast" else 4.5) for offset in offsets]
         palette = (bg, fg, muted, border, *accents)
         saved[signature] = palette
         try:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", dir=cache.parent, delete=False) as file:
-                json.dump(dict(list(saved.items())[-256:]), file)
-                temporary = file.name
-            os.replace(temporary, cache)
+            atomic_json(cache, dict(list(saved.items())[-256:]))
         except OSError:
             pass
         return palette
@@ -675,10 +857,10 @@ class Activity:
                 stamp = (stat.st_mtime_ns, stat.st_size)
             except OSError:
                 stamp = None
-            signature = (track.identity, track.art, stamp, self.config["palette_light"])
+            signature = (track.identity, track.art, stamp, self.config["palette_light"], self.config["palette_mode"])
             if self.config["dynamic_palette"] and signature != self.art:
                 self.art = signature
-                self.palette = dominant_palette(track.art, self.palette, self.config["palette_light"])
+                self.palette = dominant_palette(track.art, self.palette, self.config["palette_light"], self.config["palette_mode"])
             self.stop.wait(.25)
 
 

@@ -57,8 +57,12 @@ def make_ui(h=40, w=140):
     spectrum.bars = [.15 + .75 * abs(amui.math.sin(i * .19)) for i in range(48)]
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
         config = amui.load_config()
+    temporary = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(temporary.cleanup)
     ui = amui.UI(Screen(h, w), player, lyrics, spectrum,
-                argparse.Namespace(theme="nocturne", no_lyrics=False, no_cava=False, config_data=config))
+                argparse.Namespace(theme="nocturne", no_lyrics=False, no_cava=False, config_data=config,
+                                   config=str(Path(temporary.name)/"config.toml")))
+    ui._test_directory = temporary
     ui.cover.enabled = False
     ui.palette = {i: i for i in range(1, 7)}
     return ui

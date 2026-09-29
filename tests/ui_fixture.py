@@ -52,10 +52,25 @@ def lyrics(self, track, retry):
             "[01:35.00]Todo suena un poco más cerca\n[01:55.00]Cuando dejamos el ruido atrás\n[02:10.00]Sólo queda esta canción"}
 
 
+def music_lookup(self, term, library, kind, next_path):
+    return [dict(id='fixture:1', type=('library-' if library else '')+kind,
+                 title='Fixture Search Result', artist='Fixture Artist', album='Fixture Album')], ''
+
+
+def music_choose(self, item, action='play-item'):
+    destination = os.environ.get('AMUI_FIXTURE_MUSIC_ACTIONS')
+    if destination:
+        with open(destination, 'a') as file:
+            file.write(json.dumps(dict(action=action, item=item))+'\n')
+    self.label = 'Selección enviada · fixture'
+
+
 amui.Player.run = playback
 amui.Extras.run = extras
 amui.Spectrum.run = spectrum
 amui.Lyrics.fetch = lyrics
+amui.MusicBrowser.lookup = music_lookup
+amui.MusicBrowser.choose = music_choose
 
 if __name__ == "__main__":
     raise SystemExit(amui.main())

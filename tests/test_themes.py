@@ -15,12 +15,15 @@ class ThemeTests(unittest.TestCase):
         original = ui.theme
         ui.config['dynamic_palette'] = True
         ui.key('T')
+        ui.key('2')
         ui.key(amui.curses.KEY_DOWN)
         self.assertNotEqual(ui.theme, original)
+        ui.key('\x1b')
         ui.key('\x1b')
         self.assertEqual(ui.theme, original)
         self.assertTrue(ui.config['dynamic_palette'])
         ui.key('T')
+        ui.key('2')
         ui.key(amui.curses.KEY_DOWN)
         ui.key('\n')
         self.assertFalse(ui.theme_menu)

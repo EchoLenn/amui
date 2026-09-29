@@ -22,7 +22,7 @@ class TerminalTests(unittest.TestCase):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 2 if mini else 40, 140, 0, 0))
         env = dict(os.environ, TERM="xterm-256color", XDG_CONFIG_HOME=directory, XDG_CACHE_HOME=directory,
-                   AMUI_FIXTURE_ACTIONS=directory + "/actions.jsonl")
+                   AMUI_FIXTURE_ACTIONS=directory + "/actions.jsonl", AMUI_FIXTURE_MUSIC_ACTIONS=directory + '/music.jsonl')
         env.pop("KITTY_WINDOW_ID", None)
         env.pop("TERM_PROGRAM", None)
         process = subprocess.Popen([sys.executable, str(ROOT / "tests/ui_fixture.py"), *(["--mini"] if mini else [])],
@@ -51,6 +51,9 @@ class TerminalTests(unittest.TestCase):
                 os.write(master, b"T")
                 output += self.read(master, .2)
                 self.assertIn(b"VISTA PREVIA", output)
+                self.assertIn(b"Pywal", output)
+                os.write(master, b"2")
+                output += self.read(master, .2)
                 self.assertIn(b"sakura", output)
                 os.write(master, b"\x1bOB\n")
                 output += self.read(master, .2)
@@ -100,3 +103,30 @@ class TerminalTests(unittest.TestCase):
                     process.wait()
                 os.close(master)
                 os.close(slave)
+
+    def test_music_browser_input_selection_and_library_in_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            master, slave, process = self.open_ui(directory)
+            try:
+                output = self.read(master,.5)
+                os.write(master,b'bfixture\n')
+                output += self.read(master,.4)
+                self.assertIn(b'ELIGE TU', output)
+                self.assertIn(b'Fixture Search Result',output)
+                os.write(master,b'\n+n')
+                output += self.read(master,.2)
+                os.write(master,b'\t')
+                output += self.read(master,.3)
+                os.write(master,b'\n')
+                output += self.read(master,.2)
+                os.write(master,b'\x1b')
+                output += self.read(master,.1)
+                os.write(master,b'q'); process.wait(timeout=3)
+                events=[json.loads(line) for line in (Path(directory)/'music.jsonl').read_text().splitlines()]
+                self.assertEqual([e['action'] for e in events],['play-item','play-later','play-next','play-item'])
+                self.assertEqual(events[-1]['item']['type'],'library-songs')
+                self.assertEqual(process.returncode,0,output[-1000:])
+                self.assertNotIn(b'Traceback',output)
+            finally:
+                if process.poll() is None: process.kill(); process.wait()
+                os.close(master); os.close(slave)

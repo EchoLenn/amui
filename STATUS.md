@@ -26,6 +26,8 @@ Repositorio remoto: <https://github.com/EchoLenn/amui> (privado).
   local autenticada de Cider cuando esa sesión no expone dichos controles.
 - Configuración TOML, temas y atajos personalizables; historial local;
   scrobbling opcional para Last.fm y ListenBrainz.
+- Selector de fuentes de color (`T`): carátula con 3 modos (extracción, complementarios, contrastantes), temas fijos con vista previa, tema personalizado con editor hex paso a paso, y Pywal con recarga en caliente.
+- Búsqueda y selección de música desde amui (`b`): catálogo y biblioteca de Apple Music, canciones/álbumes/playlists, reproducción y agregado a la cola con paginación acumulativa.
 - Soporte de mouse: seek desde la barra de progreso y desplazamiento de letras.
 
 ## Estructura
@@ -59,14 +61,19 @@ Las opciones y atajos completos están en [README.md](README.md) y
 
 ## Estado de calidad
 
-La v0.4 incorpora selector visual (`T`), cinco temas nuevos, listado de temas,
-paletas por K-means, caché por contenido, contraste, transiciones y recarga de
-temas. La ayuda está agrupada por categorías.
+La v0.5.1 incorpora el selector de fuentes de tema (`T`) con soporte de carátula
+(extracción, complementarios, contraste), temas fijos, temas personalizados con
+editor guiado y pywal con sincronización en caliente, además del navegador y
+buscador de música (`b`) conectado a Cider y Apple Music.
 
-La suite tiene 42 pruebas, incluyendo interacción en terminal PTY, cancelación
-del selector, recarga inválida, caché e invalidación de portada y contraste.
-Las 42 pasan en este entorno. El fallo Sixel se debía a que Chafa no podía
-decodificar el PPM de prueba; ahora se intenta ImageMagick cuando Chafa falla.
+La suite tiene 55 pruebas (unitarias, terminal PTY y servidor HTTP de prueba).
+Las 55 pasan. Se comprobaron consultas reales al catálogo mexicano y a la
+biblioteca, incluyendo canciones, álbumes, playlists y páginas siguientes.
+Las órdenes de reproducción y cola se verificaron con el servidor de prueba y
+el flujo de teclado PTY; no se sustituyó la cola personal para hacer pruebas.
+
+La reparación conserva los respaldos legacy, persiste la elección de apariencia,
+respeta temas personalizados explícitos y conserva los hexadecimales originales.
 
 ## Publicación
 

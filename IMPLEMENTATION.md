@@ -1,5 +1,24 @@
 # Ideas.md — alcance y verificación
 
+## Reparación v0.5.1 — auditoría del estado real
+
+- Restaurados `legacy/amui.bash` y `legacy/amui-v0.2.py` desde Git, sin diferencias.
+- Cuatro fuentes de color accesibles desde `T`, con tres modos de carátula.
+- Selecciones persistentes; cambios manuales del TOML y flags CLI respetados.
+- Corregido el arranque de temas personalizados: `personal` ya no sustituye un
+  tema TOML elegido explícitamente. Se conservan hexadecimales originales al guardar.
+- Pywal inválido no cambia la fuente seleccionada ni sustituye los colores válidos.
+- Más resultados se agregan a la lista; no se pierde selección ni páginas anteriores.
+- Respuestas tardías no reemplazan búsquedas nuevas; las órdenes de reproducción
+  aceptadas no se descartan porque el usuario inicie otra búsqueda.
+- 55 pruebas aprobadas: incluye persistencia/reinicio, precedencia TOML, exactitud
+  del editor, paginación, errores y flujo PTY de búsqueda, selección y cola.
+- Búsqueda real y paginación comprobadas con Cider autenticado: catálogo México y
+  biblioteca, para canciones, álbumes y playlists. No se alteró la reproducción
+  personal al verificar; las órdenes se comprobaron con HTTP local y PTY.
+
+La guía actual está en `docs/CONFIGURATION.md`; las secciones siguientes son históricas.
+
 ## Actualización v0.4 — temas y colores
 
 Alcance acordado de next-features.md: selector, cinco temas, paleta por portada,
