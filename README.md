@@ -8,7 +8,7 @@ no está afiliado a Apple ni a Cider. La licencia del código no incluye música
 letras, portadas ni autorización para usar servicios de terceros: véase [NOTICE](NOTICE).
 
 Última versión publicada: [v0.5.6](https://github.com/EchoLenn/amui/releases/tag/v0.5.6).
-`main` incluye mejoras posteriores de contraste, teclado y documentación.
+`main` incluye mejoras posteriores de contraste, teclado, documentación y CI.
 Un solo ejecutable para **Linux de escritorio**, Python estándar y diseño
 adaptable; no hay versiones separadas por terminal. No se ofrece soporte
 nativo para macOS o Windows.
@@ -177,6 +177,8 @@ cover_protocol = "none"
 La TUI **no ha sido validada con lectores de pantalla**. `amui --status` ofrece
 una salida textual estable para otras herramientas, no un modo accesible completo.
 Detalles y límites: [revisión de accesibilidad](docs/PROJECT.md#revisión-de-accesibilidad-y-publicación).
+Hay un [plan de prueba manual](docs/PROJECT.md#prueba-manual-con-lector-de-pantalla)
+para comprobar lectura y navegación con usuarios de tecnologías de asistencia.
 
 ## Privacidad y derechos
 
@@ -202,7 +204,17 @@ probar el complemento JavaScript; no es dependencia de uso. Las pruebas no
 alteran la cola ni biblioteca personales. Los documentos históricos y propuestas
 ya implementadas se consolidaron; los originales siguen recuperables desde Git.
 
-Para contribuir, abre un issue con versión, terminal, pasos y resultado esperado;
+En cada push a `main` y pull request, [GitHub Actions](https://github.com/EchoLenn/amui/actions)
+ejecuta las pruebas en Linux con Python 3.11 y 3.14, Node para el puente y una
+instalación/desinstalación en un prefijo temporal. No usa tokens de Apple Music
+ni una sesión personal de Cider. Las acciones están fijadas por commit y tienen
+permisos de solo lectura; el workflow no publica releases ni despliega contenido.
+Los tests nativos de imágenes pueden omitirse en el runner sin ImageMagick 7;
+`make check` con `magick` y Chafa en Linux comprueba también esos backends.
+CI no sustituye la prueba visual o con lector de pantalla.
+
+Para contribuir, [abre un reporte de fallo o accesibilidad](https://github.com/EchoLenn/amui/issues/new/choose)
+con versión, terminal, pasos y resultado esperado;
 no incluyas tokens ni datos personales. Envía cambios pequeños con una prueba
 de regresión. Aporta solo material que puedas licenciar bajo MIT y conserva
 los avisos aplicables a código de terceros. Las capturas futuras necesitan

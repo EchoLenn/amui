@@ -1,0 +1,58 @@
+name: Bug report
+description: Report an amui problem with steps we can follow.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem in text. Screenshots and logs are optional.
+        Do not attach tokens, credentials, account details, or listening history.
+        If you attach a screenshot, explain what it shows, redact private information,
+        and only share material you have permission to share.
+  - type: input
+    id: version
+    attributes:
+      label: amui version
+      description: Run amui --version, or write unknown if you cannot check.
+      placeholder: "0.5.6"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Linux and terminal
+      description: Include your Linux distribution, terminal and version, font, and Cider version if known. Unknown details are okay.
+      placeholder: "Arch Linux; Kitty; JetBrains Mono; Cider version unknown"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the starting screen and the keys or actions used. If it only happened once, describe the last action you remember.
+      placeholder: |
+        1. Open amui.
+        2. Press b, then ...
+        3. The problem occurs when ...
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Tell us what you expected and what happened instead, including any error shown.
+      placeholder: |
+        Expected:
+        Actual:
+    validations:
+      required: true
+  - type: input
+    id: appearance
+    attributes:
+      label: Theme and display settings (optional)
+      description: For visual problems, include the theme source, palette mode, font size, and terminal rows/columns if known.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Extra details or redacted error text (optional)
+      description: No diagnosis is required. Share only relevant text; do not upload token/configuration files or listening history. Describe and redact any optional screenshot.

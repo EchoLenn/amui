@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amui-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Linux / Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      TERM: xterm-256color
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONUTF8: "1"
+      XDG_CONFIG_HOME: ${{ runner.temp }}/amui-ci/config
+      XDG_CACHE_HOME: ${{ runner.temp }}/amui-ci/cache
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Set up Node for bridge tests
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y playerctl chafa ncurses-term
+          command -v playerctl
+          command -v chafa
+          node --version
+          python3 -c "import curses, locale; print(locale.getpreferredencoding(False))"
+          if ! command -v magick >/dev/null; then
+            printf '%s\n' '::notice::ImageMagick 7 is unavailable; optional native-image tests report skips. Palette/keyboard unit tests still run.'
+          fi
+      - name: Run unit, HTTP, PTY and bridge tests
+        run: make check
+      - name: Verify isolated installation
+        run: |
+          task_prefix="$(mktemp -d "$RUNNER_TEMP/amui-install.XXXXXX")"
+          make install PREFIX="$task_prefix"
+          cmp LICENSE "$task_prefix/share/amui/LICENSE"
+          cmp NOTICE "$task_prefix/share/amui/NOTICE"
+          cmp share/amui/cider-plugin/plugin.js "$task_prefix/share/amui/cider-plugin/plugin.js"
+          cmp share/amui/cider-plugin/plugin.yml "$task_prefix/share/amui/cider-plugin/plugin.yml"
+          "$task_prefix/bin/amui" --version
+          "$task_prefix/bin/amui" --help
+          "$task_prefix/bin/amui" --config "$task_prefix/share/amui/config.example.toml" --check-config
+          "$task_prefix/bin/amui" --config "$task_prefix/config.toml" --init-config
+          "$task_prefix/bin/amui" --config "$task_prefix/config.toml" --check-config
+          if "$task_prefix/bin/amui" --config "$task_prefix/config.toml" --init-config; then
+            printf '%s\n' 'Initialization unexpectedly overwrote an existing configuration.' >&2
+            exit 1
+          fi
+          cmp share/amui/config.example.toml "$task_prefix/config.toml"
+          make uninstall PREFIX="$task_prefix"
+          test ! -e "$task_prefix/bin/amui"
+          test ! -e "$task_prefix/bin/amui-kitty"
+          test ! -e "$task_prefix/share/applications/amui.desktop"
+          test ! -e "$task_prefix/share/amui/LICENSE"
+          test ! -e "$task_prefix/share/amui/NOTICE"
+          cmp share/amui/config.example.toml "$task_prefix/config.toml"

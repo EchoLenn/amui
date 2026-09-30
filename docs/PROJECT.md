@@ -140,6 +140,80 @@ con lectores de pantalla ni se declara cumplimiento WCAG. La alternativa CLI
 de estado es texto estable, pero no reemplaza la navegación de la TUI.
 Objetivos de contraste: [W3C](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
 
+### Prueba manual con lector de pantalla
+
+**Estado: pendiente; no hay una prueba de voz o braille aprobada.** La revisión
+local del 30 de septiembre de 2026 encontró Arch Linux, KDE/Wayland, Kitty
+0.49.1, Konsole 26.08.1, AT-SPI2 2.60.7 y espeak-ng 1.52.0. Orca y
+Speech Dispatcher no están instalados; disponer de un sintetizador no equivale
+a disponer de un lector funcional. La fuente efectiva de la ventana no se midió.
+No se instalaron paquetes ni se activaron aplicaciones para esta revisión.
+
+[Orca necesita aplicaciones que expongan AT-SPI](https://gnome.pages.gitlab.gnome.org/orca/help/introduction.html).
+El [mantenedor de Kitty documentó la ausencia de integración con lectores](https://github.com/kovidgoyal/kitty/discussions/9202);
+el soporte de imágenes o teclado de Kitty no prueba accesibilidad por voz.
+Elegir una terminal que el lector pueda leer, comprobar primero texto normal
+y registrar la combinación exacta; Konsole instalado tampoco demuestra que
+su funcionamiento con Orca haya sido probado aquí.
+
+Realizar la evaluación en una sesión de prueba con el lector configurado,
+preferiblemente con una persona que lo use habitualmente. Registrar commit y
+`amui --version`, distribución/kernel, escritorio, Wayland/X11, terminal y
+versión, fuente **real** y versión/tamaño, paleta, lector y versión, idioma/voz
+o dispositivo braille, layout/modificador del lector y tamaño en celdas.
+`fc-match monospace` por sí solo no identifica una fuente sobrescrita por la
+ventana. Los resultados deben describir lo oído o leído, no solo lo dibujado.
+
+Desde el repositorio, usar `tests/ui_fixture.py`: sus reproductor, búsqueda,
+letras y cola son simulados. Crear un directorio temporal:
+
+```bash
+task_dir=$(mktemp -d)
+```
+
+Guardar allí `manual.toml` con los ajustes siguientes; así la prueba no necesita
+una cuenta ni modifica reproducción real:
+
+```toml
+theme = "mono"
+theme_source = "fixed"
+animations = false
+cava = false
+cover_protocol = "none"
+mouse = false
+history = false
+desktop_notifications = false
+[scrobble]
+providers = []
+```
+
+```bash
+XDG_CONFIG_HOME="$task_dir/config" XDG_CACHE_HOME="$task_dir/cache" \
+  python3 tests/ui_fixture.py --config "$task_dir/manual.toml" --no-cava
+```
+
+| Paso manual | Qué comprobar y registrar |
+| --- | --- |
+| Texto normal antes de amui | El lector reconoce la terminal y lee una línea con «canción, sesión, música». Si falla, bloquear la combinación antes de evaluar la TUI. |
+| Metadatos sin portada | Localizar título, artista, álbum, estado y tiempos por voz/braille; no depender de imagen, color ni ayuda visual. |
+| Lectura y selección | Distinguir revisión del texto de selección de amui. En `b`, buscar, mover ↑↓ y comprobar que se identifica el resultado seleccionado y su acción. |
+| Ayuda y formularios | Abrir `?`, salir con Esc; abrir `T` → personalizado, identificar nombre de campo y `#RRGGBB`, editar con Ctrl+U y cancelar. Registrar etiquetas ausentes, tecla interceptada o lectura desactualizada. |
+| Cola y confirmaciones | Abrir `Q`, mover selección, solicitar `d`/`c` y cancelar con Esc. Leer canción/alcance, Enter/Esc y cambio de contexto; realizar confirmaciones únicamente en la simulación. |
+| Solo teclado y cambios | Completar lo anterior sin mouse; volver al reproductor, cambiar entre paneles y redimensionar. Comprobar foco/selección recuperables y que los redibujados no interrumpen constantemente la voz. |
+| Movimiento y paleta | Comparar los ajustes sin movimiento con la paleta/fuente habitual y ventana compacta. No tratar lectura por voz como prueba de contraste ni viceversa. |
+
+La [revisión plana de Orca](https://gnome.pages.gitlab.gnome.org/orca/help/howto_flat_review.html)
+lee contenido visible y puede quedar desactualizada tras un redibujado;
+refrescarla no demuestra que amui anuncie automáticamente selección o cambios.
+Registrar por paso **aprobado, fallo o bloqueado**, teclas exactas, respuesta
+literal y ayuda requerida, sin tokens ni datos de cuentas. Si no hay acceso
+al texto, foco o selección, dejarlo como fallo/bloqueo y reportar la combinación;
+no sustituirlo por una prueba PTY o por `--status`. Esa CLI sigue siendo una
+alternativa textual parcial. La aceptación real requiere completar esta matriz
+con salida de un lector funcional y evaluación humana, pendiente actualmente.
+
+### Derechos y condiciones
+
 La [LFDA mexicana](https://www.diputados.gob.mx/LeyesBiblio/pdf/LFDA.pdf)
 protege, entre otras categorías, obras musicales, fotografías y programas de
 cómputo (art. 13 y 101–102). La licencia de amui no concede derechos sobre obras

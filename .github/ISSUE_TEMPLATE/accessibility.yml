@@ -1,0 +1,65 @@
+name: Accessibility report
+description: Report a keyboard, text, contrast, or assistive-technology barrier.
+title: "[Accessibility] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        You do not need a screen reader, screenshot, or technical diagnosis to report a barrier.
+        Describe the task and where it became difficult or impossible.
+        Do not attach tokens, credentials, account details, or listening history.
+        If you attach a screenshot, provide a text description, redact private information,
+        and only share material you have permission to share.
+  - type: input
+    id: version
+    attributes:
+      label: amui version
+      description: Run amui --version, or write unknown if you cannot check.
+      placeholder: "0.5.6"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Linux and terminal
+      description: Include your Linux distribution, terminal and version, font, and window size if known. Unknown details are okay.
+      placeholder: "Arch Linux; Kitty; JetBrains Mono; 80 columns by 24 rows"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Task and keyboard steps
+      description: Describe the task, starting screen, keys used, and where navigation or reading failed. Mention mouse actions only if relevant.
+      placeholder: |
+        Task:
+        1. Open amui.
+        2. Press ...
+        3. At this point ...
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe what should be readable or operable and what you observed. If using a screen reader, include relevant spoken text in your own words.
+      placeholder: |
+        Expected:
+        Actual:
+    validations:
+      required: true
+  - type: input
+    id: appearance
+    attributes:
+      label: Theme and contrast settings (optional)
+      description: Include the theme source, palette mode, font size, and any terminal color overrides if relevant.
+  - type: textarea
+    id: assistive_technology
+    attributes:
+      label: Assistive technology setup (optional)
+      description: If used, name the screen reader or other tool, its version, and how it accesses the terminal. Leave blank if you do not use one.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Extra details or redacted evidence (optional)
+      description: A text description is enough. Redact private data, describe optional screenshots, and share only material you have permission to share.
