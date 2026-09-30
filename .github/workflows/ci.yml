@@ -28,8 +28,6 @@ jobs:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
       PYTHONUTF8: "1"
-      XDG_CONFIG_HOME: ${{ runner.temp }}/amui-ci/config
-      XDG_CACHE_HOME: ${{ runner.temp }}/amui-ci/cache
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,8 +54,14 @@ jobs:
             printf '%s\n' '::notice::ImageMagick 7 is unavailable; optional native-image tests report skips. Palette/keyboard unit tests still run.'
           fi
       - name: Run unit, HTTP, PTY and bridge tests
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/amui-ci/config
+          XDG_CACHE_HOME: ${{ runner.temp }}/amui-ci/cache
         run: make check
       - name: Verify isolated installation
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/amui-ci/config
+          XDG_CACHE_HOME: ${{ runner.temp }}/amui-ci/cache
         run: |
           task_prefix="$(mktemp -d "$RUNNER_TEMP/amui-install.XXXXXX")"
           make install PREFIX="$task_prefix"
