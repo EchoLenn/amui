@@ -1,4 +1,4 @@
-"""Acceptance checks for every feature in Ideas.md; no external account writes."""
+"""Acceptance checks for integrated features; no external account writes."""
 from dataclasses import replace
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
