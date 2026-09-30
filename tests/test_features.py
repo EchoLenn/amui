@@ -211,7 +211,7 @@ class FeatureTests(unittest.TestCase):
         self.assertTrue(all(a <= b <= .8 for a, b in zip(values, values[1:])))
         self.assertAlmostEqual(value, .8, places=5)
 
-    def test_fade_goes_from_background_to_foreground(self):
+    def test_fade_stays_readable_and_reaches_foreground(self):
         ui = make_ui()
         ui.changed_at = 0
         results = []
@@ -223,7 +223,9 @@ class FeatureTests(unittest.TestCase):
                 with patch.object(amui.time, "monotonic", return_value=now):
                     ui.fade()
                 results.append(initialize.call_args_list[-3].args[1])
-        self.assertEqual(results[0], amui.THEMES["nocturne"][0])
+        background = amui.THEMES["nocturne"][0]
+        for color in results:
+            self.assertGreaterEqual(f.contrast(f.rgb(color), f.rgb(background)), 4.5)
         self.assertEqual(results[-1], amui.THEMES["nocturne"][1])
         self.assertNotIn(results[1], (results[0], results[-1]))
 

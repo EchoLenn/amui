@@ -62,6 +62,6 @@ haber alterado la biblioteca personal para verificarlas. Para usar `H` hay que
 activar una vez el complemento en Cider. Los avisos nativos necesitan un daemon
 de notificaciones; fin de canción está limitado por el intervalo de muestreo.
 
-El usuario indicó que el fallo previo de playlist dejó de reproducirse en la
-última versión y autorizó continuar con esta entrega. Si vuelve a ocurrir, se
-investigará con su estado y error concretos, sin atribuirlo automáticamente al layout.
+El fallo previo de playlist no volvió a reproducirse durante la validación de
+esta entrega. Si reaparece, su estado y error concretos permitirán investigar
+la causa; no hay evidencia para atribuirlo automáticamente al layout.

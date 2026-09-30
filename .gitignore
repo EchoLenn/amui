@@ -1,3 +1,15 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Local credentials and listening data; keep examples and test fixtures tracked.
+.env
+.env.*
+!.env.example
+*.token
+/config.toml
+/scrobble.json
+/history.jsonl
+/scrobbles.json
+/custom-theme.json
+/config.appearance.json

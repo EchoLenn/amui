@@ -1,0 +1,29 @@
+amui is an independent, unofficial project. It is not affiliated with,
+endorsed by, or sponsored by Apple, Cider, or the other services named here.
+Product names and trademarks belong to their respective owners.
+
+The MIT license covers amui's original code and documentation. It does not
+license music, lyrics, artwork, fonts, trademarks, accounts, or third-party
+software and services. No such media or third-party software is bundled in
+this repository. External tools retain their own licenses.
+
+Runtime integrations include Cider and its PluginKit message interface,
+playerctl/MPRIS, Kitty/kitten, CAVA, ImageMagick, Chafa, and notify-send.
+Pywal integration reads a local JSON palette; amui does not run Pywal.
+The bundled Favorites Bridge is amui's adapter, not a copy of PluginKit.
+
+Lyrics are retrieved from LRCLIB. Artwork may be read from local MPRIS paths
+or fetched from Apple's mzstatic.com hosts. Optional Last.fm and ListenBrainz
+integrations submit listening metadata. See docs/PROJECT.md for data flows.
+Cache and export functions do not grant permission to redistribute media.
+
+Apple Media Services terms may restrict third-party software access and
+automated extraction. amui does not establish authorization under those
+terms. Users must review the terms applicable to their country and account:
+https://www.apple.com/legal/internet-services/itunes/
+
+This repository review is not legal clearance or legal advice. Copyright,
+service terms, privacy obligations, and permissions depend on the content,
+jurisdiction, and use. Do not contribute media or code without the necessary
+rights and notices. Obtain appropriate legal review before distributing
+third-party content or offering a hosted service.

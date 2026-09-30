@@ -32,6 +32,8 @@ from services import SleepTimer, DesktopNotifications
 
 VERSION = "0.5.6"
 SEP = "\x1f"
+COLOR_LABELS = ("Fondo", "Texto principal", "Texto secundario", "Bordes",
+                "Acento principal", "Acento secundario", "Acento terciario")
 THEMES = {
     "nocturne": (234, 255, 244, 239, 211, 80, 183),
     "ember": (234, 230, 244, 239, 209, 222, 173),
@@ -675,7 +677,7 @@ class UI:
         self.box(1, 1, h-2, w-2, "TEMPORIZADOR DE PAUSA")
         for i, choice in enumerate(("15 minutos", "30 minutos", "45 minutos", "60 minutos", "Al terminar esta canción", "Cancelar temporizador")):
             self.text(3+i, 3, ("› " if i == self.sleep_index else "  ")+choice, 4 if i == self.sleep_index else 1, i == self.sleep_index, w-6)
-        self.text(h-3, 3, "↑↓ elegir · Enter aplicar · Esc volver", 5, limit=w-6)
+        self.text(h-3, 3, "↑↓ elegir · Enter aplicar · Esc", 5, limit=w-6)
 
     def theme_choices(self):
         if self.theme_page == "sources":
@@ -785,13 +787,21 @@ class UI:
         self.music_index = min(self.music_index, max(0, len(self.music.items)-1))
         start = max(0, self.music_index-count+1)
         for i, item in enumerate(self.music.items[start:start+count], start):
-            y = 7+(i-start)*2
+            y = 6+(i-start)*2
             self.text(y, 3, ("› " if i == self.music_index else "  ")+str(item["title"]), 4 if i == self.music_index else 1, i == self.music_index, w-6)
             self.text(y+1, 5, str(item["artist"])+(" · "+str(item["album"]) if item["album"] else ""), 2, limit=w-8)
-        footer = "Enter buscar · Ctrl+U limpiar · Esc salir" if self.music_editing else "Enter abrir/play · P play · + cola · n siguiente · / buscar · Esc salir"
-        if self.music_collection:
-            footer = "Enter play · + cola · n siguiente · P colección · Esc volver"
-        self.text(h-3, 3, footer, 5, limit=w-6)
+        if self.music_editing:
+            hints = ("Enter buscar · Esc salir", "Tab fuente · ←→ tipo · Ctrl+U borrar")
+        else:
+            selected = self.music.items[self.music_index] if self.music.items else None
+            opens_collection = selected and selected["type"] in ("albums", "playlists", "library-albums", "library-playlists")
+            action = "abrir" if opens_collection else "reproducir"
+            if w < 80:
+                hints = (f"↑↓ · Enter {action} · + final", "Esc volver · n próxima · P todo" if self.music_collection else "Esc salir · / buscar · n próxima")
+            else:
+                hints = (f"↑↓ elegir · Enter {action} · + al final · n próxima", "Esc volver · P colección · N más" if self.music_collection else "Esc salir · / buscar · Tab fuente · ←→ tipo · P reproducir · N más")
+        self.text(h-4, 3, hints[0], 5, limit=w-6)
+        self.text(h-3, 3, hints[1], 5, limit=w-6)
 
     def apply_source(self, source):
         # Validate the source before changing the current selection.
@@ -963,17 +973,23 @@ class UI:
         h, w = self.screen.getmaxyx()
         choices = self.theme_choices()
         names = [label for label, _ in choices]
+        if self.custom_edit is not None and (h < 10 or w < 42):
+            self.text(0, 0, f"{self.custom_step+1}/7 {COLOR_LABELS[self.custom_step]}: {self.custom_hex}", 4, True, w-1)
+            self.text(1, 0, "Enter siguiente · Esc cancelar", 2, limit=w-1)
+            if h > 2:
+                self.text(2, 0, self.theme_error or "#RRGGBB · Ctrl+U borrar", 2, limit=w-1)
+            return
         if h < 8 or w < 32:
-            label = (COLOR_NAMES[self.custom_step] + ": " + self.custom_hex) if self.custom_edit is not None else names[self.theme_index]
+            label = names[self.theme_index]
             self.text(0, 0, "TEMA " + label, 4, True, w - 1)
-            self.text(1, 0, self.theme_error or "↑↓ elegir · Enter · Esc", 2, limit=w - 1)
+            self.text(1, 0, self.theme_error or "↑↓ · Enter aplicar · Esc", 2, limit=w - 1)
             return
         self.box(1, 1, h - 2, w - 2, "TEMAS · VISTA PREVIA")
         if self.custom_edit is not None:
-            self.text(3, 3, f"Color {self.custom_step+1}/7: {COLOR_NAMES[self.custom_step]}", 4, True, w-6)
+            self.text(3, 3, f"Color {self.custom_step+1}/7: {COLOR_LABELS[self.custom_step]}", 4, True, w-6)
             self.text(4, 3, self.custom_hex + "▏", 5, limit=w-6)
-            self.text(5, 3, "Ctrl+U borrar · Enter siguiente/guardar", 2, limit=w-6)
-            self.text(h-3, 3, self.theme_error or "Esc cancelar edición", 2, limit=w-6)
+            self.text(5, 3, "#RRGGBB · Ctrl+U borrar", 2, limit=w-6)
+            self.text(h-3, 3, self.theme_error or "Enter siguiente/guardar · Esc cancelar", 2, limit=w-6)
             return
         count = max(1, h - 7)
         start = min(max(0, self.theme_index - count + 1), max(0, len(names) - count))
@@ -987,7 +1003,7 @@ class UI:
                         curses.init_pair(pair, color, color)
                         self.palette[pair] = curses.color_pair(pair)
                         self.text(row, 24+j*3, "██", pair)
-        self.text(h-3, 3, self.theme_error or "↑↓ elegir · Enter aceptar · Esc volver/cancelar", 2, limit=w-6)
+        self.text(h-3, 3, self.theme_error or ("↑↓ · Enter aplicar · Esc" if w < 54 else "↑↓ elegir · Enter aceptar · Esc volver/cancelar"), 2, limit=w-6)
 
     def toast(self, text):
         self.toast_text, self.toast_until = text, time.monotonic() + 3
@@ -1001,7 +1017,9 @@ class UI:
             curses.start_color()
             colors = [fg, muted, border, accent, cyan, lilac]
             for i, color in enumerate(colors, 1):
-                curses.init_pair(i, color if curses.COLORS >= 256 else [7, 7, 4, 5, 6, 3][i-1],
+                # Adjust rendered roles, keeping saved/custom palette values intact.
+                color = readable(rgb(color), bg, 3 if i == 3 else 4.5) if curses.COLORS >= 256 else 7
+                curses.init_pair(i, color,
                                  bg if curses.COLORS >= 256 else 0)
                 self.palette[i] = curses.color_pair(i)
         self.screen.bkgd(" ", self.palette.get(1, 0))
@@ -1018,6 +1036,8 @@ class UI:
             return
         for pair, target in ((7, colors[1]), (8, colors[4]), (9, colors[2])):
             color = target if elapsed >= 1 else nearest_color(tuple(round(a + (b - a) * elapsed) for a, b in zip(rgb(colors[0]), rgb(target))))
+            # Metadata stays readable from the first animation frame onward.
+            color = readable(rgb(color), colors[0])
             curses.init_pair(pair, color, colors[0])
             self.palette[pair] = curses.color_pair(pair)
         self.fade_done = signature if elapsed >= 1 else None
@@ -1099,7 +1119,7 @@ class UI:
             favorite = getattr(self.extras, "favorite", None)
             library = getattr(self.extras, "library", None)
             if favorite is True:
-                state += " · ♥"
+                state += " · FAVORITO"
             if library is True:
                 state += " · BIBLIOTECA"
         self.text(y + h - 3, tx, state, 5, True, tw)
@@ -1142,7 +1162,10 @@ class UI:
         shuffle = "—" if not self.extras or self.extras.shuffle is None else "ON" if self.extras.shuffle else "OFF"
         repeat = {None: "—", "None": "OFF", "Track": "PISTA", "Playlist": "COLA"}.get(self.extras.repeat if self.extras else None, "—")
         self.text(y + 2, 3, f"{self.binding('shuffle')} shuffle {shuffle}   {self.binding('repeat')} repeat {repeat}", 5, limit=w - 6)
-        self.text(y + 5, 3, f"{self.binding('music')} música   {self.binding('theme_picker')} temas   {self.binding('queue')} cola   {self.binding('favorite')} ♥   {self.binding('library')} biblioteca   {self.binding('sleep')} timer   {self.binding('help')} ayuda", 2, limit=w - 6)
+        hints = f"{self.binding('music')} música · {self.binding('queue')} cola · {self.binding('help')} ayuda · {self.binding('quit')} salir"
+        if w >= 112:
+            hints = f"{self.binding('music')} música · {self.binding('theme_picker')} temas · {self.binding('queue')} cola · {self.binding('favorite')} favorito · {self.binding('library')} biblioteca · {self.binding('sleep')} temporizador · {self.binding('help')} ayuda"
+        self.text(y + 5, 3, hints, 2, limit=w - 6)
         if self.timer.active:
             timer_label = self.timer.label()
             if w >= 80:
@@ -1151,7 +1174,10 @@ class UI:
                 self.text(y+5, 3, timer_label+" · "+self.binding('sleep')+" cambiar", 4, limit=w-6)
 
     def queue_panel(self, y, x, h, w):
-        self.box(y, x, h, w, "UP NEXT", "QUEUE")
+        title = "UP NEXT"
+        if self.queue_focus and self.queue_confirm:
+            title = "¿Borrar canción?" if self.queue_confirm[0] == "delete" else "¿Vaciar pendientes?"
+        self.box(y, x, h, w, title, "QUEUE")
         items, label = (self.extras.items, self.extras.label) if self.extras else ([], "Cola no disponible")
         view = getattr(self.extras, "queue_view", None) if self.extras else None
         if view != self.queue_seen:
@@ -1173,8 +1199,10 @@ class UI:
             self.text(row+1, x + 7, artist, 2, limit=w - 10)
         if self.queue_focus:
             footer = f"↑↓ elegir · Enter saltar · d borrar · c vaciar pendientes · Q/Esc volver · {self.queue_index+1 if items else 0}/{len(items)}"
+            if w < 80:
+                footer = "↑↓ · Enter saltar · Esc volver"
             if self.queue_confirm:
-                footer = "¿Borrar canción? Enter confirma · Esc cancela" if self.queue_confirm[0] == "delete" else "¿Vaciar pendientes? Enter confirma · Esc cancela"
+                footer = "Enter confirma · Esc cancela"
             self.text(y+h-2, x+3, footer, 5, limit=w-6)
 
     def mini(self, track, w):
@@ -1214,6 +1242,7 @@ class UI:
         elif key in ("\n", "\r", curses.KEY_ENTER):
             value = self.prompt_value.strip()
             if not value:
+                self.toast("Escribe un valor · Esc cancela")
                 return True
             if self.prompt == "title":
                 self.search_title = value
@@ -1347,6 +1376,9 @@ class UI:
             for group, actions in groups.items():
                 rows.append((group, ""))
                 rows.extend((self.binding(a), labels[a]) for a in actions.split())
+            rows.extend((("COLA ABIERTA", ""), ("↑↓ / PgUp/Dn", "seleccionar canción"),
+                         ("Enter", "saltar a canción"), ("d / Supr", "eliminar seleccionada"),
+                         ("c", "vaciar pendientes"), ("Esc", "cancelar / volver")))
             columns, step = (2 if w >= 90 else 1), (2 if h >= 36 else 1)
             count = max(1, (h - 8) // step)
             pages = max(1, math.ceil(len(rows) / (count * columns)))
@@ -1383,6 +1415,17 @@ class UI:
             return self.music_key(key)
         if self.prompt:
             return self.prompt_key(key)
+        normalized = {" ": "SPACE", curses.KEY_LEFT: "LEFT", curses.KEY_RIGHT: "RIGHT",
+                      curses.KEY_UP: "UP", curses.KEY_DOWN: "DOWN"}.get(key, key)
+        if self.help:
+            if key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
+                self.help_page += 1 if key == curses.KEY_NPAGE else -1
+            elif key == "\x1b" or normalized in self.config["keybinds"]["help"]:
+                self.help = False
+                self.cover.clear()
+            elif normalized in self.config["keybinds"]["quit"]:
+                return False
+            return True
         if self.queue_focus and not self.help:
             if self.queue_confirm:
                 if key in ("\n", "\r", curses.KEY_ENTER):
@@ -1412,14 +1455,9 @@ class UI:
                 else:
                     self.toast("Sin cola seleccionable · conecta la API de Cider")
                 return True
-        if self.help and key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
-            self.help_page += 1 if key == curses.KEY_NPAGE else -1
-            return True
         if key == curses.KEY_MOUSE and self.config["mouse"] and not self.help:
             self.mouse()
             return True
-        normalized = {" ": "SPACE", curses.KEY_LEFT: "LEFT", curses.KEY_RIGHT: "RIGHT",
-                      curses.KEY_UP: "UP", curses.KEY_DOWN: "DOWN"}.get(key, key)
         action = self.config["keymap"].get(normalized)
         if action in ("toggle", "next", "previous", "forward", "back", "up", "down", "mute", "restart", "shuffle", "repeat"):
             self.player.send(action)

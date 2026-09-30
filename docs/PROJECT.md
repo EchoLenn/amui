@@ -7,11 +7,12 @@ Este documento consolida estado, implementación, resúmenes y propuestas
 anteriores. Instalación y controles están en [README](../README.md);
 los ajustes detallados, en [CONFIGURATION](CONFIGURATION.md).
 
-## Qué construimos
+## Alcance
 
 Un frontend de Apple Music para terminal sobre Cider, MPRIS y Python estándar.
 Cider sigue siendo el motor musical: amui no implementa reproducción, login
-de Apple Music ni almacenamiento de audio. Mantiene un ejecutable universal.
+de Apple Music ni almacenamiento de audio. Mantiene un ejecutable para Linux
+de escritorio; no ofrece soporte nativo de macOS o Windows.
 
 La base incluye detección `chromium.instance*`, controles de reproducción,
 seek, volumen/mute, reinicio, duración cacheada, portada y layout adaptable.
@@ -30,7 +31,7 @@ Las seis propuestas más recientes están implementadas:
    conservar páginas y selección, elegir canciones y volver a resultados.
 2. **Cola:** navegar y saltar a una posición existente; eliminar selección o
    vaciar solo pendientes con confirmación y verificación de cambios.
-3. **Biblioteca/favoritos:** `A` añade; `H` alterna el favorito real. El corazón
+3. **Biblioteca/favoritos:** `A` añade; `H` alterna el favorito real. La etiqueta FAVORITO
    representa estado guardado confirmado, no una calificación ni estado optimista.
 4. **Notificaciones:** `notify-send` opcional, deduplicado y sin bloquear el dibujo.
 5. **Temporizador:** pausa única en 15/30/45/60 minutos o fin de canción;
@@ -83,6 +84,72 @@ Debe instalarse y **activarse** una vez en Plugins; reiniciar no sustituye activ
 - Scrobbling cuenta escucha efectiva, sin pausas/seek; umbral mitad de pista
   o cuatro minutos, excluye pistas de 30 s o menos y reintenta pendientes.
 
+## Privacidad e integraciones
+
+No hay embeds de terceros en la documentación ni medios empaquetados en el
+repositorio. Esto no significa que la aplicación funcione sin conexiones:
+
+| Integración | Datos y destino | Cuándo |
+| --- | --- | --- |
+| LRCLIB | Título, artista, álbum y duración para encontrar letras; caché local | Letras activadas, predeterminado; `--no-lyrics` las desactiva |
+| Cider / Apple Music | Token enviado solo a la API localhost; consultas de catálogo/biblioteca y acciones a través de Cider | Configuración de API y funciones musicales |
+| Portadas | Ruta local MPRIS o descarga HTTPS de hosts `mzstatic.com`, sin URL arbitraria ni redirecciones | Cuando hay portada disponible; caché local |
+| Last.fm / ListenBrainz | Metadatos de escucha y credenciales al proveedor elegido | Solo con proveedor habilitado y credenciales |
+| CAVA | Audio de la salida del sistema, también de otras apps | Visualizador habilitado; no se almacena ni envía audio desde amui |
+| Notificaciones | Título, artista, álbum y posible portada al servicio del escritorio | Solo con `desktop_notifications = true` |
+| Historial / exportación | Metadatos locales, letras en caché y LRC/TXT exportados | Historial predeterminado; exportación manual |
+
+Las consultas externas también exponen la conexión al proveedor (por ejemplo,
+la dirección IP). No hay telemetría propia añadida por amui; Cider y los servicios
+externos tienen sus propias políticas. Pywal solo se lee localmente.
+`cover_protocol = "none"` evita dibujar imágenes; no es un control de privacidad
+que garantice que no se recuperen metadatos o portada. Desinstalar conserva datos.
+
+No publiques tokens, historial, cachés ni exportaciones. `.gitignore` excluye
+archivos de credenciales y datos personales habituales, pero no sustituye revisar
+lo que se añade a Git. Una credencial publicada debe revocarse, no solo borrarse.
+
+## Revisión de accesibilidad y publicación
+
+Revisión posterior a v0.5.6, 30 de septiembre de 2026:
+
+- **139 pruebas aprobadas** con `make check`, incluidas diez regresiones nuevas
+  de contraste y teclado, pruebas de terminal PTY y del puente JavaScript.
+- Contraste de los ocho temas, temas personalizados/dinámicos y fases de fade:
+  objetivo 4.5:1 para texto y 3:1 para bordes con los RGB de la paleta xterm.
+  Los valores guardados no cambian; se corrige únicamente su representación.
+  En ocho colores se usa blanco sobre negro. No se atenúa texto con `A_DIM`.
+- Ayuda modal, selección por teclado, preguntas de confirmación y cancelación
+  visibles en paneles compactos; campos de color nombrados y formato explícito.
+  Los estados de favorito no dependen solo de un corazón.
+- Título, artista y álbum proporcionan la identificación textual independiente
+  de la portada. No equivalen a una descripción visual de la obra de arte.
+  No hay imágenes Markdown que necesiten `alt`; futuras capturas deben tener
+  alternativas descriptivas y derechos de uso.
+- Revisión de archivos y escaneo por patrones del historial Git alcanzable,
+  incluyendo `origin/main` y etiquetas: 93 blobs comprobados antes de esta
+  actualización, sin coincidencias de credenciales conocidas ni rutas privadas.
+  No es una garantía exhaustiva de ausencia de secretos o de procedencia legal.
+- Código y documentación originales bajo [MIT](../LICENSE). Dependencias y
+  servicios externos conservan sus condiciones; avisos en [NOTICE](../NOTICE).
+  No se empaquetan música, letras, portadas, fuentes ni bibliotecas de terceros.
+
+Las comprobaciones de paleta y teclado son automatizadas; la interpretación
+real depende del emulador, su paleta configurable y su fuente. No se ha validado
+con lectores de pantalla ni se declara cumplimiento WCAG. La alternativa CLI
+de estado es texto estable, pero no reemplaza la navegación de la TUI.
+Objetivos de contraste: [W3C](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
+
+La [LFDA mexicana](https://www.diputados.gob.mx/LeyesBiblio/pdf/LFDA.pdf)
+protege, entre otras categorías, obras musicales, fotografías y programas de
+cómputo (art. 13 y 101–102). La licencia de amui no concede derechos sobre obras
+obtenidas de otros servicios. Los [términos de Apple para México](https://www.apple.com/legal/internet-services/itunes/mx/terms.html)
+restringen acceso mediante software de terceros y extracción automatizada;
+la compatibilidad contractual de esta integración no se ha establecido.
+Esta revisión no es asesoría ni autorización legal. Se necesita revisión
+específica de derechos y condiciones antes de redistribuir contenido de terceros,
+usar el proyecto comercialmente con dichos servicios u ofrecerlo como servicio.
+
 ## Historial resumido
 
 - **Bash/v0.2:** base funcional, portada Kitty, letras, CAVA y diseño adaptable.
@@ -94,12 +161,12 @@ Debe instalarse y **activarse** una vez en Plugins; reiniciar no sustituye activ
   conservados, persistencia, paginación y precedencia corregidas; 55 pruebas entonces.
 - **v0.5.2:** volumen real, shuffle estable, cursor/portada y Unicode; lanzador
   Kitty opcional con JetBrains Mono sin cambios globales; 59 pruebas entonces.
-- **v0.5.3:** navegación en álbumes/playlists; confirmada por el usuario; 65 pruebas entonces.
+- **v0.5.3:** navegación en álbumes/playlists; 65 pruebas entonces.
 - **v0.5.4:** selección y salto en cola sin duplicar canciones.
 - **v0.5.5:** recuperación de metadatos MPRIS vacíos tras saltar, incluso al reabrir.
 - **v0.5.6:** las seis propuestas completas y auditoría; **129 pruebas aprobadas**,
-  instalación temporal/local y publicación verificadas. El usuario indicó que
-  el fallo previo de playlist dejó de reproducirse y autorizó el lanzamiento.
+  instalación temporal/local y publicación verificadas. El fallo previo de
+  playlist no volvió a reproducirse durante la validación de esa entrega.
 
 ## Límites y cómo seguir
 
@@ -124,6 +191,7 @@ Como ideas futuras, todavía no implementadas ni comprometidas para una versión
 estadísticas de escucha, socket de control y hooks. Se conservan como posibilidades,
 no como funciones actuales ni requisitos de esta entrega.
 
-La limpieza documental posterior a v0.5.6 no cambia el código ni esa etiqueta.
+La limpieza documental y los ajustes de accesibilidad posteriores a v0.5.6
+no cambian esa etiqueta; están disponibles en `main`, sin una nueva release.
 Los cinco documentos raíz redundantes se retiraron de `main`; sus versiones
 originales siguen en Git y en la etiqueta v0.5.6, sin perder el historial.

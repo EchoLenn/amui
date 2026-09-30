@@ -3,15 +3,22 @@
 Apple Music en tu terminal: **Cider reproduce; amui pone la portada, letras,
 CAVA, controles y navegación musical al frente.**
 
-Versión actual: [v0.5.6](https://github.com/EchoLenn/amui/releases/tag/v0.5.6).
-Un ejecutable universal, Python estándar y diseño adaptable; no hay versiones
-separadas por terminal. La entrega pasó **129 pruebas automatizadas**.
+**Código abierto bajo [MIT](LICENSE).** Proyecto independiente y no oficial;
+no está afiliado a Apple ni a Cider. La licencia del código no incluye música,
+letras, portadas ni autorización para usar servicios de terceros: véase [NOTICE](NOTICE).
+
+Última versión publicada: [v0.5.6](https://github.com/EchoLenn/amui/releases/tag/v0.5.6).
+`main` incluye mejoras posteriores de contraste, teclado y documentación.
+Un solo ejecutable para **Linux de escritorio**, Python estándar y diseño
+adaptable; no hay versiones separadas por terminal. No se ofrece soporte
+nativo para macOS o Windows.
 
 ## Qué incluye
 
 - Reproducción, seek, volumen, mute, reinicio, shuffle y repeat mediante MPRIS
   o la API local autenticada de Cider.
-- Portadas Kitty, iTerm2/WezTerm y Sixel, con alternativa sin imágenes.
+- Portadas mediante los protocolos Kitty, OSC 1337 y Sixel, con alternativa
+  sin imágenes; la disponibilidad depende de la terminal en Linux.
 - CAVA integrado; letras LRCLIB sincronizadas o de texto, caché, búsqueda,
   desfase y exportación sin sobrescribir archivos.
 - Carátula con extracción, complementarios o contraste; ocho temas fijos,
@@ -26,7 +33,7 @@ separadas por terminal. La entrega pasó **129 pruebas automatizadas**.
 
 ## Instalar
 
-Necesitas **Python 3.11+, Cider y playerctl**, con Apple Music iniciado en Cider
+Necesitas **Linux, Python 3.11+, Cider y playerctl**, con Apple Music iniciado en Cider
 y MPRIS disponible en tu sesión de escritorio. En Arch Linux:
 
 ```bash
@@ -143,6 +150,47 @@ Last.fm y ListenBrainz también requieren activación y credenciales explícitas
 CAVA captura la salida del sistema, incluidas otras aplicaciones; su backend
 `pulse` funciona con `pipewire-pulse`, o puedes elegir `pipewire`.
 
+## Accesibilidad
+
+La navegación, búsqueda y edición funcionan con teclado: las instrucciones
+indican Enter, Esc y Ctrl+U; la ayuda no envía acciones al reproductor por detrás.
+Favoritos y estados tienen etiquetas de texto, no solo iconos o colores.
+Título, artista y álbum permanecen visibles sin portada; una TUI no tiene
+atributos HTML `alt`. No hay imágenes ni embeds externos en este README.
+
+El renderizado apunta a **4.5:1 para texto y 3:1 para bordes** según la paleta
+xterm de 256 colores, incluso durante fades y con temas personalizados.
+Es un criterio tomado de [WCAG](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html),
+no una certificación: la paleta y fuente del terminal pueden cambiar el resultado.
+El modo de ocho colores usa blanco sobre negro.
+
+Para reducir movimiento y elementos visuales, ajusta `config.toml`:
+
+```toml
+theme = "mono"
+theme_source = "fixed"
+animations = false
+cava = false
+cover_protocol = "none"
+```
+
+La TUI **no ha sido validada con lectores de pantalla**. `amui --status` ofrece
+una salida textual estable para otras herramientas, no un modo accesible completo.
+Detalles y límites: [revisión de accesibilidad](docs/PROJECT.md#revisión-de-accesibilidad-y-publicación).
+
+## Privacidad y derechos
+
+Con letras activas, LRCLIB recibe metadatos de la canción; la API de Cider
+consulta Apple Music y las portadas pueden descargarse de servidores de Apple.
+Historial y cachés son locales; scrobbling solo se envía al activarlo.
+Consulta [los flujos de datos](docs/PROJECT.md#privacidad-e-integraciones) antes
+de usar las integraciones o compartir capturas, cachés y exportaciones.
+
+Los [términos de Apple](https://www.apple.com/legal/internet-services/itunes/mx/terms.html)
+incluyen restricciones de acceso mediante terceros y extracción automatizada.
+MIT no elimina esas restricciones ni garantiza que esta integración esté autorizada.
+No redistribuyas música, letras o portadas sin los derechos correspondientes.
+
 ## Documentación y desarrollo
 
 - [Estado, arquitectura, historial y continuidad del proyecto](docs/PROJECT.md).
@@ -153,3 +201,10 @@ Ejecuta `make check` antes de cambiar comportamiento. Node es opcional para
 probar el complemento JavaScript; no es dependencia de uso. Las pruebas no
 alteran la cola ni biblioteca personales. Los documentos históricos y propuestas
 ya implementadas se consolidaron; los originales siguen recuperables desde Git.
+
+Para contribuir, abre un issue con versión, terminal, pasos y resultado esperado;
+no incluyas tokens ni datos personales. Envía cambios pequeños con una prueba
+de regresión. Aporta solo material que puedas licenciar bajo MIT y conserva
+los avisos aplicables a código de terceros. Las capturas futuras necesitan
+[texto alternativo útil](https://www.w3.org/WAI/tutorials/images/) y contenido
+propio o autorizado. No se debe afirmar soporte de una plataforma sin probarla.

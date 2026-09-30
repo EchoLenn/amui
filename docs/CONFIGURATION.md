@@ -1,4 +1,4 @@
-# Configuración de amui 0.5.6
+# Configuración de amui
 
 ## Cola interactiva
 
@@ -15,7 +15,7 @@ la canción y la cola; si cambian, se detiene. Nunca usa el borrado de cola comp
 
 `H` alterna el favorito real; `A` añade la canción actual a la biblioteca.
 El estado se confirma consultando Apple Music y se asocia a la identidad de
-esa canción. Un fallo no cambia el corazón ni anuncia un guardado exitoso.
+esa canción. Un fallo no cambia el estado FAVORITO ni anuncia un guardado exitoso.
 
 Para `H`, ejecuta `amui --install-cider-plugin` y en Cider → Settings → Plugins
 actualiza la lista y activa **amui Favorites Bridge**. El complemento usa el
@@ -58,6 +58,9 @@ El editor pide siete colores: Ctrl+U limpia, Enter acepta y avanza; el último
 Enter guarda en `custom-theme.json`, junto al archivo TOML. Esc cancela la
 edición sin sobrescribir el archivo. La representación en terminal usa 256
 colores, pero se guardan los valores hexadecimales exactos.
+Cada campo tiene nombre e indicación `#RRGGBB`. El renderizado corrige contraste
+de texto y bordes sin modificar los colores guardados; los detalles y límites
+están en [la revisión de accesibilidad](PROJECT.md#revisión-de-accesibilidad-y-publicación).
 
 La elección de tema, fuente y modo se guarda en un archivo hermano del TOML:
 `config.toml` usa `config.appearance.json`. Prioridad: CLI → elección guardada →
@@ -204,7 +207,9 @@ vuelve a `providers = []`; los pendientes se conservan, pero no se envían.
 ## Portadas y límites
 
 - Kitty: `kitten icat` o `kitty +kitten icat`; se elimina sólo la imagen de amui.
-- iTerm2 y WezTerm: protocolo OSC 1337 inline, sin dependencia adicional.
+- OSC 1337 inline: protocolo implementado para terminales compatibles, como
+  WezTerm en Linux. El nombre `iterm` identifica el protocolo, no soporte de
+  amui en macOS/iTerm2.
 - foot/Sixel: `chafa --format=sixels`, o ImageMagick si Chafa no está presente.
 - Forzar: `cover_protocol = "sixel"` / `"iterm"` / `"kitty"` / `"none"`.
 - El origen habitual es una ruta local `file://` de MPRIS. Si Cider pierde esos
@@ -214,6 +219,10 @@ vuelve a `providers = []`; los pendientes se conservan, pero no se envían.
 - La paleta dominante requiere ImageMagick; si no existe, mantiene el tema.
 - El mouse requiere soporte de eventos en la terminal; Shift+seleccionar suele
   permitir seleccionar texto del terminal sin que amui capture el click.
+
+amui requiere una sesión Linux con MPRIS; implementar varios protocolos de
+imagen no implica soporte nativo de macOS/Windows ni pruebas visuales en cada
+terminal. `cover_protocol = "none"` evita dibujar imágenes sin perder metadatos.
 
 Documentación de los protocolos:
 [iTerm2](https://iterm2.com/documentation-images.html),

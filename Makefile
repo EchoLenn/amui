@@ -10,6 +10,8 @@ check:
 	python3 -m unittest discover -s tests -v
 
 install:
+	install -Dm644 LICENSE "$(DESTDIR)$(DATADIR)/LICENSE"
+	install -Dm644 NOTICE "$(DESTDIR)$(DATADIR)/NOTICE"
 	install -Dm644 lib/amui/features.py "$(DESTDIR)$(LIBDIR)/features.py"
 	install -Dm644 lib/amui/services.py "$(DESTDIR)$(LIBDIR)/services.py"
 	install -Dm644 share/amui/config.example.toml "$(DESTDIR)$(DATADIR)/config.example.toml"
@@ -26,3 +28,4 @@ uninstall:
 	rm -f "$(DESTDIR)$(LIBDIR)/features.py" "$(DESTDIR)$(DATADIR)/config.example.toml"
 	rm -f "$(DESTDIR)$(LIBDIR)/services.py"
 	rm -f "$(DESTDIR)$(DATADIR)/cider-plugin/plugin.js" "$(DESTDIR)$(DATADIR)/cider-plugin/plugin.yml"
+	rm -f "$(DESTDIR)$(DATADIR)/LICENSE" "$(DESTDIR)$(DATADIR)/NOTICE"
