@@ -1,82 +1,60 @@
-# Estado del proyecto — amui
+# Estado del proyecto — amui v0.5.6
 
-Última actualización: 29 de septiembre de 2026.
+Actualizado: 30 de septiembre de 2026.
 
-## Qué es
+Frontend universal de Apple Music para terminal. Cider reproduce; amui aporta
+MPRIS, controles, portadas, CAVA, letras, temas y navegación musical. Sigue
+usando Python estándar y un ejecutable para todas las terminales compatibles.
 
-`amui` es una interfaz musical para terminal construida sobre Cider, MPRIS y
-Python estándar. Cider se encarga de la reproducción de Apple Music; amui pone
-al frente los metadatos, controles, portada, letras y visualizador.
+## Entrega actual
 
-Repositorio remoto: <https://github.com/EchoLenn/amui> (privado).
+Las seis propuestas de `PROPUESTAS.md` están implementadas:
 
-## Implementado
+1. Entrar en álbumes/playlists, paginar y elegir canciones (`b`).
+2. Navegar y saltar en cola; eliminar selección o vaciar pendientes con
+   confirmación y protección de historial/canción actual (`Q`).
+3. Favorito real confirmado (`H`) y añadir a biblioteca (`A`).
+4. Avisos de escritorio opcionales, desactivados por defecto.
+5. Temporizador de pausa de 15/30/45/60 minutos o fin de canción (`Z`).
+6. Estado JSON y controles sin interfaz (`--status/--next/--prev/--toggle`).
 
-- Detección automática de sesiones `chromium.instance*` de Cider mediante
-  MPRIS, con opción `--player` para seleccionar una sesión concreta.
-- Metadatos, controles de reproducción, seek, volumen, mute, reinicio y barra
-  de progreso con duración cacheada por canción.
-- Diseño adaptable de terminal: vista completa, compacta, modo mini de dos
-  líneas, panel de ayuda, avisos de cambio de canción y animaciones suaves.
-- Portadas en Kitty, iTerm2/WezTerm y Sixel cuando el terminal lo permite,
-  además de paleta dinámica basada en la portada.
-- Visualizador CAVA, letras de LRCLIB con caché, letras sincronizadas, búsqueda
-  manual, ajuste de desfase y exportación LRC/TXT sin sobrescribir archivos.
-- Cola "Up next", shuffle y repeat a través de MPRIS TrackList o de la API
-  local autenticada de Cider cuando esa sesión no expone dichos controles.
-- Configuración TOML, temas y atajos personalizables; historial local;
-  scrobbling opcional para Last.fm y ListenBrainz.
-- Selector de fuentes de color (`T`): carátula con 3 modos (extracción, complementarios, contrastantes), temas fijos con vista previa, tema personalizado con editor hex paso a paso, y Pywal con recarga en caliente.
-- Búsqueda y selección de música desde amui (`b`): catálogo y biblioteca de Apple Music, canciones/álbumes/playlists, reproducción y agregado a la cola con paginación acumulativa.
-- Soporte de mouse: seek desde la barra de progreso y desplazamiento de letras.
+Para favoritos, instalar el complemento incluido con
+`amui --install-cider-plugin` y activarlo en Cider → Settings → Plugins.
+La activación es necesaria; reiniciar Cider no basta. Los demás controles
+siguen usando MPRIS o la API local autenticada según corresponda.
+
+## Estabilidad y auditoría
+
+Se conservan las reparaciones de volumen, shuffle, portadas y Unicode; el
+lanzador opcional `amui-kitty` cambia la fuente solo para su ventana.
+La v0.5.5 recupera metadatos MPRIS vacíos desde la instancia verificada de Cider.
+El usuario informó que el fallo de playlist ya no reaparece en la última versión;
+no se considera reproducido un nuevo fallo completo de reproducción.
+
+La auditoría de v0.5.6 cancela controles de otra sesión, limita reintentos de
+portadas fallidas y evita recalcular fades terminados. No inventa una canción
+con los flags residuales que Cider conserva cuando no hay pista cargada.
+La revisión de requisitos, pruebas y límites está en
+[docs/AUDIT-v0.5.6.md](docs/AUDIT-v0.5.6.md).
+Las 129 pruebas pasan; también se verificó una instalación completa en prefijo temporal.
 
 ## Estructura
 
 ```text
-bin/amui                    ejecutable principal
+bin/amui                    interfaz y controles
+bin/amui-kitty              lanzador opcional, configuración aislada
 lib/amui/features.py        configuración e integraciones
-share/amui/                 configuración de ejemplo
-docs/                       guía de configuración
-tests/                      pruebas unitarias, HTTP y terminal PTY
+lib/amui/services.py        temporizador y notificaciones ligeras
+share/amui/                 ejemplo, lanzador y complemento Cider
+docs/                       configuración y auditoría
+tests/                      unitarias, HTTP, JavaScript y teclado PTY
 legacy/                     versiones anteriores conservadas
-README.md                   instalación, uso y controles
-IMPLEMENTATION.md           alcance y verificación detallada
 ```
 
-## Uso rápido
+## Instalación y publicación
 
-En Arch Linux:
-
-```bash
-sudo pacman -S python playerctl kitty cava
-make check
-make install
-amui --init-config
-amui
-```
-
-Cider se instala por separado y debe estar ejecutándose con MPRIS disponible.
-Las opciones y atajos completos están en [README.md](README.md) y
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-## Estado de calidad
-
-La v0.5.1 incorpora el selector de fuentes de tema (`T`) con soporte de carátula
-(extracción, complementarios, contraste), temas fijos, temas personalizados con
-editor guiado y pywal con sincronización en caliente, además del navegador y
-buscador de música (`b`) conectado a Cider y Apple Music.
-
-La suite tiene 55 pruebas (unitarias, terminal PTY y servidor HTTP de prueba).
-Las 55 pasan. Se comprobaron consultas reales al catálogo mexicano y a la
-biblioteca, incluyendo canciones, álbumes, playlists y páginas siguientes.
-Las órdenes de reproducción y cola se verificaron con el servidor de prueba y
-el flujo de teclado PTY; no se sustituyó la cola personal para hacer pruebas.
-
-La reparación conserva los respaldos legacy, persiste la elección de apariencia,
-respeta temas personalizados explícitos y conserva los hexadecimales originales.
-
-## Publicación
-
-El repositorio privado contiene el proyecto completo en la rama `main` y el
-script `bin/amui` conserva su permiso de ejecución. No se publicaron tokens,
-configuración personal ni cachés de reproducción.
+`make check` verifica; `make install` actualiza la instalación local sin tocar
+preferencias, tokens, cachés ni configuración global de Kitty. Si ya existe
+configuración, no vuelvas a crearla: las nuevas opciones tienen predeterminados.
+Repositorio privado: [EchoLenn/amui](https://github.com/EchoLenn/amui).
+No se incluyen secretos ni datos personales de reproducción en el repositorio.

@@ -30,6 +30,7 @@ KEYS = {
     "lyrics": ["L"], "focus": ["f"], "visualizer": ["v"], "theme": ["t"], "theme_picker": ["T"],
     "scroll_up": ["["], "scroll_down": ["]"], "offset_back": [","], "offset_forward": ["."],
     "retry": ["R"], "open": ["o"], "search": ["/"], "export": ["S"], "queue": ["Q"], "music": ["b"],
+    "favorite": ["H"], "library": ["A"], "sleep": ["Z"],
 }
 COLOR_NAMES = ("background", "foreground", "muted", "border", "accent", "secondary", "tertiary")
 
@@ -78,7 +79,7 @@ def load_config(path=None):
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"No se pudo leer {path}: {error}") from error
     defaults = dict(theme="nocturne", cava_input="pulse", lyrics_offset=0.,
-                    lyrics=True, cava=True, queue=True, history=True, notifications=True,
+                    lyrics=True, cava=True, queue=True, history=True, notifications=True, desktop_notifications=False,
                     animations=True, dynamic_palette=False, palette_light=False, mouse=True, cover_protocol="auto",
                     theme_source="auto", palette_mode="extract", pywal_file=str(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home()/".cache"))) / "wal/colors.json"),
                     export_dir=str(Path.home() / "Music/amui-lyrics"))
@@ -250,6 +251,13 @@ class CiderAPI:
             raise ValueError("Apple Music no devolvió datos válidos")
         return data
 
+    def message(self, kind, data):
+        token = os.environ.get("AMUI_CIDER_TOKEN") or read_secret(self.token_file)
+        result = json_request(self.url + "/api/v1/messages/message", {"type": kind, "data": data},
+                              {"apptoken": token} if token else {})
+        if not isinstance(result, dict) or result.get("status") != "success":
+            raise ValueError("Cider rechazó el mensaje")
+
 
 class MusicBrowser:
     """Serial background requests; stale searches cannot replace newer results."""
@@ -270,6 +278,42 @@ class MusicBrowser:
         self.items, self.next_path = previous, ""
         self.label, self.busy = "Buscando…", True
         self.jobs.put((self.generation, "search", (term, library, kind, next_path, previous)))
+
+    def tracks(self, item, next_path=""):
+        if self.busy:
+            return
+        self.generation += 1
+        previous = list(self.items) if next_path else []
+        self.items, self.next_path = previous, ""
+        self.label, self.busy = "Cargando canciones…", True
+        self.jobs.put((self.generation, "tracks", (dict(item), next_path, previous)))
+
+    def snapshot(self):
+        return (list(self.items), self.next_path, self.label)
+
+    def restore(self, snapshot):
+        # Invalidate an outstanding collection request when navigating back.
+        self.generation += 1
+        self.items, self.next_path, self.label = snapshot
+        self.busy = False
+
+    def region(self):
+        if not self.storefront:
+            stores = self.api.music("/v1/me/storefront").get("data", [])
+            if not stores or not re.fullmatch("[a-z]{2}", str(stores[0].get("id", ""))):
+                raise ValueError("No se pudo obtener la región de Apple Music")
+            self.storefront = stores[0]["id"]
+        return self.storefront
+
+    def lookup_tracks(self, item, next_path=""):
+        kind, ident = item.get("type"), str(item.get("id", ""))
+        if kind not in ("albums", "playlists", "library-albums", "library-playlists") or not re.fullmatch(r"[\w.:-]+", ident, re.ASCII):
+            raise ValueError("Colección no válida")
+        library = kind.startswith("library-")
+        base = "/v1/me/library" if library else f"/v1/catalog/{self.region()}"
+        path = next_path or f"{base}/{kind.removeprefix('library-')}/{ident}/tracks?limit=25"
+        items, more = self.parse_items(self.api.music(path), "library-songs" if library else "songs")
+        return [item for item in items if item["type"] in ("songs", "library-songs")], more
 
     def choose(self, item, action="play-item"):
         if self.busy:
@@ -293,13 +337,12 @@ class MusicBrowser:
         else:
             if not term.strip():
                 return [], ""
-            if not self.storefront:
-                stores = self.api.music("/v1/me/storefront").get("data", [])
-                if not stores or not re.fullmatch("[a-z]{2}", str(stores[0].get("id", ""))):
-                    raise ValueError("No se pudo obtener la región de Apple Music")
-                self.storefront = stores[0]["id"]
-            path = f"/v1/catalog/{self.storefront}/search?" + urllib.parse.urlencode({"term":term, "types":kind, "limit":25})
+            path = f"/v1/catalog/{self.region()}/search?" + urllib.parse.urlencode({"term":term, "types":kind, "limit":25})
         data = self.api.music(path)
+        return self.parse_items(data, resource)
+
+    @staticmethod
+    def parse_items(data, resource):
         section = data.get("results", {}).get(resource, {}) if "results" in data else data
         if not isinstance(section, dict) or not isinstance(section.get("data", []), list):
             raise ValueError("Lista de música no válida")
@@ -328,20 +371,23 @@ class MusicBrowser:
                 continue
             if self.stop.is_set():
                 break
-            if action == "search" and generation != self.generation:
+            if action in ("search", "tracks") and generation != self.generation:
                 continue
             try:
-                if action == "search":
-                    items, next_path = self.lookup(*args[:4])
+                if action in ("search", "tracks"):
+                    items, next_path = self.lookup(*args[:4]) if action == "search" else self.lookup_tracks(*args[:2])
                     if generation == self.generation:
-                        previous = args[4]
+                        previous = args[4] if action == "search" else args[2]
                         seen = {(item["type"], item["id"]) for item in previous}
-                        combined = previous + [item for item in items if (item.get("type"), item.get("id")) not in seen]
+                        # Repeated songs in a playlist are intentional; retain order.
+                        combined = previous + (items if action == "tracks" else [item for item in items if (item.get("type"), item.get("id")) not in seen])
                         self.items, self.next_path = combined, next_path
                         self.label = f"{len(combined)} resultados" if combined else "Sin resultados · / buscar · Tab biblioteca"
+                        if action == "tracks":
+                            self.label = f"{len(combined)} canciones · P reproducir colección" if combined else "Sin canciones disponibles · Esc volver"
                 else:
                     result = self.api.request(action, {"type":args["type"], "id":args["id"]})
-                    if isinstance(result, dict) and (result.get("status") == "error" or result.get("errors")):
+                    if not isinstance(result, dict) or result.get("status") != "ok" or result.get("errors"):
                         raise ValueError("Cider rechazó la selección")
                     if generation == self.generation:
                         self.label = ("Reproducción solicitada: " if action == "play-item" else "Añadido a cola: ") + args["title"]
@@ -356,6 +402,9 @@ class MusicBrowser:
                     self.label = "Respuesta inesperada de Cider; vuelve a buscar"
             finally:
                 if generation == self.generation:
+                    if action == "tracks" and self.label.startswith(("No se pudo", "Cider no disponible", "Conecta Cider", "Respuesta inesperada")):
+                        self.next_path = args[1]
+                        self.label += " · r reintentar · Esc volver"
                     self.busy = False
 
 
@@ -396,10 +445,67 @@ def bus(player, method, interface, member, *args):
         return None
 
 
-def cider_queue(data, current):
+def is_cider_player(player):
+    """Only recover metadata for a local Chromium instance owned by Cider."""
+    match = re.fullmatch(r"chromium\.instance(\d+)", player)
+    if not match:
+        return False
+    try:
+        return Path(f"/proc/{match[1]}/exe").resolve(strict=True).name.lower() == "cider"
+    except OSError:
+        return False
+
+
+def cider_artwork(info):
+    """Cache official artwork for the MPRIS-empty recovery path."""
+    artwork = info.get("artwork") or {}
+    url = artwork.get("url", "") if isinstance(artwork, dict) else ""
+    url = url.replace("{w}", "600").replace("{h}", "600").replace("{f}", "jpg")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".mzstatic.com"):
+        return ""
+    path = cache_dir() / "artwork" / (hashlib.sha256(url.encode()).hexdigest()+".img")
+    if path.is_file():
+        return str(path)
+    temporary = None
+    try:
+        with urllib.request.build_opener(NoRedirect).open(url, timeout=2) as response:
+            data = response.read(4_000_001)
+        if not data or len(data) > 4_000_000:
+            return ""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
+            temporary = Path(file.name)
+            file.write(data)
+        temporary.replace(path)
+        return str(path)
+    except (OSError, ValueError):
+        return ""
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def queue_items(data):
+    rows = data if isinstance(data, list) else data.get("items", data.get("queue", [])) if isinstance(data, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or
+            not isinstance(row.get("attributes", row), dict) for row in rows):
+        raise ValueError("Formato de cola no reconocido")
+    return rows
+
+
+def queue_signature(data):
+    rows = queue_items(data)
+    return tuple((str(row.get("id", "")), str(row.get("type", "")),
+                  str(row.get("attributes", row).get("name", "")),
+                  str(row.get("attributes", row).get("artistName", ""))) for row in rows)
+
+
+def cider_queue(data, current, detailed=False):
     """Exclude history/current; don't invent an index for ambiguous duplicates."""
-    items = data if isinstance(data, list) else data.get("items", data.get("queue", []))
-    if not isinstance(items, list):
+    try:
+        items = queue_items(data)
+    except ValueError:
         return [], "Formato de cola no reconocido"
     index = data.get("position", data.get("nowPlayingItemIndex")) if isinstance(data, dict) else None
     if index is None:
@@ -414,12 +520,13 @@ def cider_queue(data, current):
         if len(matches) != 1:
             return [], "No se puede ubicar la pista actual en la cola"
         index = matches[0]
-    if not isinstance(index, int) or not -1 <= index < len(items):
+    if type(index) is not int or not -1 <= index < len(items):
         return [], "Posición de cola no disponible"
     result = []
-    for item in items[index + 1:index + 6]:
+    for position, item in enumerate(items[index + 1:], index + 1):
         attr = item.get("attributes", item)
-        result.append((str(attr.get("name", "Sin título")), str(attr.get("artistName", ""))))
+        labels = (str(attr.get("name", "Sin título")), str(attr.get("artistName", "")))
+        result.append((position, *labels) if detailed else labels)
     return result, "Cider API" if result else "Fin de la cola"
 
 
@@ -435,6 +542,11 @@ class Extras:
         self.now_playing = {}
         self.sampled = 0
         self.api_available = False
+        self.queue_view = None
+        self.favorite, self.library = None, None
+        self.library_identity = ""
+        self.library_at = 0
+        self.storefront = ""
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def poll(self, track):
@@ -443,14 +555,20 @@ class Extras:
 
     def _poll(self, track):
         if track.identity != self.identity:
+            self.queue_view = None
             self.items, self.label = [], "Actualizando cola…"
             self.api_available = False
+            self.favorite, self.library = None, None
+            self.library_identity = ""
         self.identity = track.identity
         if not track.player:
+            self.queue_view = None
             self.items, self.label = [], "Abre Cider para ver la cola"
             self.shuffle, self.repeat, self.now_playing = None, None, {}
             self.volume = None
             self.api_available = False
+            self.favorite, self.library = None, None
+            self.library_identity = ""
             return
         shuffle = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "Shuffle")
         repeat = bus(track.player, "get-property", "org.mpris.MediaPlayer2.Player", "LoopStatus")
@@ -469,18 +587,25 @@ class Extras:
                 self.items = [(str(item.get("xesam:title", "Sin título")),
                                ", ".join(item.get("xesam:artist", []))) for item in result]
                 self.label = "MPRIS" if upcoming else "Fin de la cola"
+                self.queue_view = None
                 self.shuffle, self.repeat = shuffle, repeat
                 self.api_available = False
                 return
         try:
             data = self.api.request("now-playing")
+            if not isinstance(data, dict):
+                raise ValueError("Respuesta de Cider no válida")
             info = data.get("info", {}) or {}
+            if not isinstance(info, dict):
+                raise ValueError("Metadatos de Cider no válidos")
+            unloaded = not track.title and not info.get("name") and is_cider_player(track.player)
             # Do not combine a different player's queue with selected MPRIS data.
-            if info.get("name") != track.title or info.get("artistName") != track.artist:
+            if not unloaded and (info.get("name") != track.title or info.get("artistName") != track.artist):
+                self.queue_view = None
                 self.items, self.label = [], "La API y MPRIS están cambiando de canción"
                 self.api_available = False
                 return
-            self.now_playing = info
+            self.now_playing = {} if unloaded else info
             self.sampled = time.monotonic()
             self.api_available = True
             try:
@@ -489,12 +614,30 @@ class Extras:
                     self.volume = volume
             except (OSError, ValueError, KeyError, TypeError):
                 pass
-            self.shuffle = bool(info["shuffleMode"]) if "shuffleMode" in info else bool(self.api.request("shuffle-mode")["value"])
-            mode = info.get("repeatMode")
-            if mode is None:
-                mode = self.api.request("repeat-mode")["value"]
-            self.repeat = {0: "None", 1: "Track", 2: "Playlist"}.get(mode)
-            self.items, self.label = cider_queue(self.api.request("queue"), info)
+            try:
+                mode = info.get("shuffleMode")
+                if type(mode) not in (bool, int) or mode not in (0, 1):
+                    mode = self.api.request("shuffle-mode")["value"]
+                if type(mode) in (bool, int) and mode in (0, 1):
+                    self.shuffle = bool(mode)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            try:
+                mode = info.get("repeatMode")
+                if type(mode) is not int or mode not in (0, 1, 2):
+                    mode = self.api.request("repeat-mode")["value"]
+                if type(mode) is int and mode in (0, 1, 2):
+                    self.repeat = {0: "None", 1: "Track", 2: "Playlist"}[mode]
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            if unloaded:
+                self.queue_view = None
+                self.items, self.label = [], "Cider sin canción cargada · b para elegir música"
+                self.favorite, self.library, self.library_identity = None, None, ""
+                return
+            self._library_state(info, track)
+            data = self.api.request("queue")
+            self._publish_queue(data, info, track)
         except urllib.error.HTTPError as error:
             self.items, self.label = [], "Conecta Cider: amui --connect-cider" if error.code in (401, 403) else "API de Cider no disponible"
             self.api_available = False
@@ -503,10 +646,159 @@ class Extras:
             self.api_available = False
         # Do not publish temporary MPRIS defaults while the API is in flight.
         if not self.api_available:
+            self.queue_view = None
             if self.shuffle is None:
                 self.shuffle = shuffle
             if self.repeat is None:
                 self.repeat = repeat
+
+    def _resource(self, info):
+        params = info.get("playParams") or {}
+        if not isinstance(params, dict):
+            raise ValueError("La canción no tiene identificador de Apple Music")
+        ident = str(params.get("catalogId") or params.get("id") or info.get("id") or "")
+        kind = params.get("kind", "song")
+        kind = {"song": "songs", "musicVideo": "music-videos", "songs": "songs", "music-videos": "music-videos"}.get(kind)
+        if not kind or not re.fullmatch(r"[A-Za-z0-9._-]+", ident):
+            raise ValueError("Este elemento no admite favoritos o biblioteca")
+        if ident.startswith("i."):
+            return f"/v1/me/library/{kind}/{ident}", "library-" + kind, ident
+        if not self.storefront:
+            resources = self.api.music("/v1/me/storefront").get("data", [])
+            if not resources or not isinstance(resources[0], dict):
+                raise ValueError("No se pudo consultar la región de Apple Music")
+            self.storefront = str(resources[0].get("id", ""))
+            if not re.fullmatch(r"[a-z]{2}", self.storefront):
+                raise ValueError("Región de Apple Music no válida")
+        return f"/v1/catalog/{self.storefront}/{kind}/{ident}", kind, ident
+
+    def _confirmed_library_state(self, info, track):
+        path, kind, ident = self._resource(info)
+        resources = self.api.music(path + "?extend=inFavorites&fields=inFavorites,inLibrary,playParams").get("data", [])
+        if not resources or not isinstance(resources[0], dict) or str(resources[0].get("id")) != ident:
+            raise ValueError("Apple Music no confirmó la canción consultada")
+        attributes = resources[0].get("attributes", {})
+        self.favorite = attributes.get("inFavorites") if type(attributes.get("inFavorites")) is bool else None
+        self.library = True if kind.startswith("library-") else (
+            attributes.get("inLibrary") if type(attributes.get("inLibrary")) is bool else None)
+        self.library_identity, self.library_at = track.identity, time.monotonic() + 10
+        return kind, ident
+
+    def _library_state(self, info, track):
+        # Cider's now-playing fields may be optimistic; verify the saved resource.
+        if self.library_identity == track.identity and time.monotonic() < self.library_at:
+            return
+        try:
+            self._confirmed_library_state(info, track)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            self.favorite, self.library = None, None
+            self.library_identity, self.library_at = track.identity, time.monotonic() + 10
+
+    def library_action(self, track, action):
+        """Change the requested current song and publish only server-confirmed state."""
+        with self.lock:
+            if action not in ("favorite", "add"):
+                raise ValueError("Acción de biblioteca desconocida")
+            if not track.identity or track.identity != self.player.track.identity:
+                return "La canción cambió; vuelve a intentar"
+            info = self._queue_current(track)
+            kind, ident = self._confirmed_library_state(info, track)
+            if action == "favorite" and self.favorite is None:
+                return "Apple Music no confirmó el estado de favorito"
+            if action == "add" and self.library is True:
+                return "Esta canción ya está en tu biblioteca"
+            desired = not self.favorite if action == "favorite" else True
+            self._queue_current(track, info)
+            if action == "favorite":
+                # A tiny supported Cider plugin bridges the real favorites API.
+                # The legacy set-rating endpoint is not equivalent to favorites.
+                self.api.message("amui:favorite", dict(id=ident, type=kind, state=desired,
+                                 request=f"{os.getpid()}:{time.monotonic_ns()}"))
+            else:
+                result = self.api.request("add-to-library", {})
+                if not isinstance(result, dict) or result.get("status") != "ok":
+                    raise ValueError("Cider rechazó añadir a biblioteca")
+            for attempt in range(6):
+                self._queue_current(track, info)
+                self._confirmed_library_state(info, track)
+                value = self.favorite if action == "favorite" else self.library
+                if value is desired:
+                    if action == "add":
+                        return "Canción añadida a tu biblioteca"
+                    return "Favorito añadido" if desired else "Favorito retirado"
+                if self.stop.wait(.15):
+                    break
+            if action == "favorite":
+                return "Cider no confirmó el favorito · activa el complemento amui"
+            return "Añadir a biblioteca solicitado; esperando confirmación"
+
+    def _queue_current(self, track, expected=None):
+        if track.identity != self.player.track.identity:
+            raise ValueError("La canción cambió; vuelve a seleccionar en Q")
+        info = self.api.request("now-playing").get("info", {})
+        if info.get("name") != track.title or info.get("artistName") != track.artist:
+            raise ValueError("Cider está cambiando de canción; vuelve a seleccionar")
+        if expected is not None and info.get("playParams") != expected.get("playParams"):
+            raise ValueError("La canción cambió; vuelve a seleccionar")
+        return info
+
+    def _publish_queue(self, data, info, track):
+        rows, self.label = cider_queue(data, info, detailed=True)
+        self.items = [(title, artist) for _, title, artist in rows]
+        self.queue_view = (track.identity, tuple(rows), queue_signature(data))
+
+    def jump_queue(self, view, selection):
+        return self.queue_action(view, selection, "jump")
+
+    def queue_action(self, view, selection, action):
+        """Revalidate the visible queue before acting on its absolute indexes."""
+        with self.lock:
+            if action not in ("jump", "delete", "clear_pending"):
+                raise ValueError("Acción de cola desconocida")
+            if not view or view[0] != self.player.track.identity or (action != "clear_pending" and
+                    (type(selection) is not int or not 0 <= selection < len(view[1]))):
+                return "La canción cambió; vuelve a seleccionar en Q"
+            track = self.player.track
+            info = self._queue_current(track)
+            data = self.api.request("queue")
+            rows, _ = cider_queue(data, info, detailed=True)
+            if queue_signature(data) != view[2] or tuple(rows) != view[1]:
+                return "La cola cambió; vuelve a seleccionar en Q"
+            if action == "jump":
+                result = self.api.request("queue/change-to-index", {"index": rows[selection][0]})
+                if not isinstance(result, dict) or result.get("status") != "ok":
+                    raise ValueError("Cider rechazó el salto")
+                return "Salto solicitado a la canción seleccionada"
+            if not rows:
+                return "No quedan canciones pendientes"
+            indexes = [rows[selection][0]] if action == "delete" else [row[0] for row in reversed(rows)]
+            # Cider's removeFromQueue uses _queueItems.splice(index, 1): zero based.
+            # Descending deletion preserves history/current and avoids shifted indexes.
+            signature = queue_signature(data)
+            for index in indexes:
+                self._queue_current(track, info)
+                data = self.api.request("queue")
+                if queue_signature(data) != signature:
+                    self._publish_queue(data, info, track)
+                    return "La cola cambió; se detuvo la eliminación"
+                expected = signature[:index] + signature[index + 1:]
+                result = self.api.request("queue/remove-by-index", {"index": index})
+                if not isinstance(result, dict) or result.get("status") != "ok":
+                    raise ValueError("Cider rechazó la eliminación")
+                # HTTP acknowledges dispatch before the renderer updates its queue.
+                for attempt in range(6):
+                    self._queue_current(track, info)
+                    data = self.api.request("queue")
+                    observed = queue_signature(data)
+                    if observed == expected:
+                        break
+                    if observed != signature or self.stop.wait(.05):
+                        break
+                self._publish_queue(data, info, track)
+                if observed != expected:
+                    return "La cola cambió o Cider no confirmó la eliminación"
+                signature = expected
+            return "Canción eliminada de la cola" if action == "delete" else "Cola pendiente vaciada"
 
     def run(self):
         while not self.stop.is_set():

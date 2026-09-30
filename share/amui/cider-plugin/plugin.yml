@@ -1,0 +1,10 @@
+identifier: io.github.echolenn.amui
+name: amui Favorites Bridge
+description: Applies explicit favorite changes requested by the local amui client.
+version: 1.0.0
+pluginKitVersion: "4"
+author: EchoLenn
+repo: https://github.com/EchoLenn/amui
+entry:
+  plugin.js:
+    type: main

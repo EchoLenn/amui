@@ -21,7 +21,7 @@ def playback(self):
         destination = os.environ.get("AMUI_FIXTURE_ACTIONS")
         if destination:
             with open(destination, "a") as file:
-                file.write(json.dumps(action) + "\n")
+                file.write(json.dumps(action, default=lambda value: value.__dict__) + "\n")
         if action == "shuffle":
             self.extras.shuffle = not self.extras.shuffle
         elif action == "repeat":
@@ -37,6 +37,7 @@ def extras(self):
     self.label, self.shuffle, self.repeat = "Fixture", False, "None"
     while not self.stop.is_set():
         self.identity = self.player.track.identity
+        self.queue_view = (self.identity, tuple((i+1,title,artist) for i,(title,artist) in enumerate(self.items)), ('fixture',))
         self.stop.wait(.1)
 
 
@@ -65,12 +66,17 @@ def music_choose(self, item, action='play-item'):
     self.label = 'Selección enviada · fixture'
 
 
+def collection_lookup(self, item, next_path=''):
+    return [dict(id='fixture:track', type='songs', title='Collection Track', artist='Artist', album=item['title'])], ''
+
+
 amui.Player.run = playback
 amui.Extras.run = extras
 amui.Spectrum.run = spectrum
 amui.Lyrics.fetch = lyrics
 amui.MusicBrowser.lookup = music_lookup
 amui.MusicBrowser.choose = music_choose
+amui.MusicBrowser.lookup_tracks = collection_lookup
 
 if __name__ == "__main__":
     raise SystemExit(amui.main())

@@ -1,4 +1,4 @@
-# amui v0.5.1 · ~/.config/amui/config.toml
+# amui v0.5.6 · ~/.config/amui/config.toml
 # CLI > selección guardada > este archivo > predeterminados. Python 3.11+.
 # Editar este archivo invalida la selección guardada.
 theme = "nocturne"
@@ -12,6 +12,7 @@ cava = true
 queue = true
 history = true
 notifications = true
+desktop_notifications = false # requiere notify-send; puede duplicar avisos de Cider
 animations = true
 dynamic_palette = true
 palette_light = false # permitir fondo claro con portadas predominantemente claras
@@ -27,6 +28,9 @@ export = "S"
 queue = "Q"
 theme_picker = "T"
 music = "b"
+favorite = "H"
+library = "A"
+sleep = "Z"
 # Se puede usar una tecla o una lista: forward = ["RIGHT", "l"]
 # Nombres: SPACE LEFT RIGHT UP DOWN. No se admiten teclas duplicadas.
 

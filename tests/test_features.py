@@ -84,6 +84,7 @@ class FeatureTests(unittest.TestCase):
 
     def test_shuffle_repeat_commands_and_ui_binding(self):
         player = amui.Player(threading.Event())
+        player.track = amui.Track(player="fixture")
         with patch.object(amui, "command", side_effect=["Off", "None", "Playlist", "Track"]), \
              patch.object(amui.subprocess, "run") as run:
             run.return_value.returncode = 0
@@ -315,7 +316,7 @@ class FeatureTests(unittest.TestCase):
             for mode in ("queue", "help", "search", "focus"):
                 ui = make_ui(h, w)
                 ui.extras = Mock(items=[(f"Track {n}", "Artist") for n in range(5)], label="MPRIS",
-                                 identity=ui.player.track.identity, shuffle=True, repeat="Track")
+                                 identity=ui.player.track.identity, shuffle=True, repeat="Track", queue_view=None)
                 ui.key({"queue": "Q", "help": "?", "search": "/", "focus": "f"}[mode])
                 ui.render()
                 self.assertTrue(ui.screen.cells)

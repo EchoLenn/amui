@@ -24,12 +24,13 @@ import urllib.request
 from dataclasses import dataclass, replace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib/amui"))
-from features import (Activity, Extras, History, KEYS, config_dir, load_config, connect_cider,
+from features import (Activity, Extras, History, config_dir, load_config, connect_cider,
                       detect_cover, inline_image, export_lyrics, nearest_color, rgb, smooth, parse_color, readable,
                       MusicBrowser, pywal_palette, custom_palette, atomic_json, COLOR_NAMES,
-                      restore_appearance, save_appearance)
+                      restore_appearance, save_appearance, is_cider_player, cider_artwork)
+from services import SleepTimer, DesktopNotifications
 
-VERSION = "0.5.2"
+VERSION = "0.5.6"
 SEP = "\x1f"
 THEMES = {
     "nocturne": (234, 255, 244, 239, 211, 80, 183),
@@ -131,7 +132,37 @@ class Player:
         self.saved_volume = .5
         self.notice = ""
         self.extras = None
+        self.recovery_player = ""
+        self.recovery_at = 0
+        self.recovery_info = {}
+        self.recovery_art = ""
         self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def recover_metadata(self, track, artwork=True):
+        if track.title or not self.extras or not is_cider_player(track.player):
+            self.recovery_player, self.recovery_info = "", {}
+            return track
+        if track.player != self.recovery_player or time.monotonic() >= self.recovery_at:
+            self.recovery_player = track.player
+            self.recovery_at = time.monotonic()+2
+            self.recovery_info, self.recovery_art = {}, ""
+            try:
+                info = self.extras.api.request("now-playing").get("info", {})
+                if isinstance(info, dict) and isinstance(info.get("name"), str) and info["name"]:
+                    self.recovery_info = info
+                    self.recovery_art = cider_artwork(info) if artwork else ""
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        info = self.recovery_info
+        if not info:
+            return track
+        title, artist, album = (clean(info.get(key) or "") for key in ("name", "artistName", "albumName"))
+        params = info.get("playParams") or {}
+        ident = str(params.get("id", info.get("id", ""))) if isinstance(params, dict) else ""
+        identity = "|".join((track.player, "cider:"+ident, title, artist, album))
+        length = number(info.get("durationInMillis"))/1000
+        return replace(track, identity=identity, title=title, artist=artist, album=album,
+                       art=self.recovery_art, length=length if 0 < length < 86400 else track.length)
 
     def send(self, action):
         if self.track.player:
@@ -141,6 +172,24 @@ class Player:
                 pass
 
     def act(self, player, action):
+        if player != self.track.player:
+            self.notice = "El reproductor cambió; vuelve a enviar el control"
+            return
+        if isinstance(action, tuple) and action[0] == "library":
+            try:
+                self.notice = self.extras.library_action(action[2], action[1]) if self.extras else "Conecta la API de Cider"
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                self.notice = "Cider no aceptó el cambio en tu biblioteca"
+            return
+        if isinstance(action, tuple) and action[0] == "queue":
+            try:
+                if not self.extras or player != self.track.player:
+                    self.notice = "El reproductor cambió; vuelve a seleccionar"
+                else:
+                    self.notice = self.extras.queue_action(action[2], action[1], action[3]) if len(action) == 4 else self.extras.jump_queue(action[2], action[1])
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                self.notice = "No se pudo saltar en la cola · revisa Cider"
+            return
         if action in ("up", "down", "mute") and self.extras and self.extras.api_available:
             try:
                 with self.extras.lock:
@@ -170,13 +219,17 @@ class Player:
             args = {action: ["position", str(max(0, min(position, self.track.length)))]}
         else:
             args = {}
-        if self.extras and self.extras.api_available and (action in ("shuffle", "repeat", "forward", "back", "restart") or isinstance(action, tuple)):
+        if self.extras and self.extras.api_available and (action in ("shuffle", "repeat", "forward", "back", "restart", "toggle", "next", "previous", "pause") or isinstance(action, tuple)):
             try:
                 if action in ("shuffle", "repeat"):
-                    self.extras.api.request("toggle-" + action, {})
+                    result = self.extras.api.request("toggle-" + action, {})
+                elif action in ("toggle", "next", "previous", "pause"):
+                    result = self.extras.api.request("playpause" if action == "toggle" else action, {})
                 else:
                     pos = action[1] if isinstance(action, tuple) else 0 if action == "restart" else self.track.elapsed() + (5 if action == "forward" else -5)
-                    self.extras.api.request("seek", {"position": max(0, min(pos, self.track.length or pos))})
+                    result = self.extras.api.request("seek", {"position": max(0, min(pos, self.track.length or pos))})
+                if not isinstance(result, dict) or result.get("status") == "error" or result.get("errors"):
+                    raise ValueError("Cider rechazó el control")
                 self.extras.poll(self.track)
                 self.notice = ""
             except (OSError, ValueError):
@@ -196,6 +249,7 @@ class Player:
             args[action] = ["loop", {"None": "Playlist", "Playlist": "Track", "Track": "None"}[current]]
         args.update({
             "toggle": ["play-pause"], "next": ["next"], "previous": ["previous"],
+            "pause": ["pause"],
             "forward": ["position", "5+"], "back": ["position", "5-"],
             "restart": ["position", "0"],
         })
@@ -216,6 +270,37 @@ class Player:
         except (OSError, subprocess.TimeoutExpired):
             self.notice = "MPRIS no respondió"
 
+    def sample(self, artwork=True):
+        names = command("playerctl", "-l").splitlines()
+        names = [n for n in names if n == self.explicit] if self.explicit else [
+            n for n in names if n.startswith("chromium.instance")]
+        states = [(n, command("playerctl", "-p", n, "status")) for n in names]
+        player, status = next((p for p in states if p[1] == "Playing"),
+                              states[0] if states else ("", "Stopped"))
+        if not player:
+            self.track = Track()
+            return self.track
+        raw = command("playerctl", "-p", player, "metadata", "--format", SEP.join(
+            "{{" + key + "}}" for key in ("mpris:trackid", "xesam:title", "xesam:artist",
+                                           "xesam:album", "mpris:artUrl", "mpris:length")))
+        track = self.recover_metadata(metadata_track(player, raw, self.track), artwork)
+        pos = number(command("playerctl", "-p", player, "position"))
+        sampled = time.monotonic()
+        vol = number(command("playerctl", "-p", player, "volume"), .5)
+        if self.extras and self.extras.api_available and self.extras.identity == track.identity:
+            if self.extras.volume is not None:
+                vol = self.extras.volume
+            info = self.extras.now_playing
+            duration = number(info.get("durationInMillis")) / 1000
+            api_pos = number(info.get("currentPlaybackTime"), -1)
+            if duration > 0 and api_pos >= 0:
+                track = replace(track, length=duration)
+                age = max(0, time.monotonic() - self.extras.sampled)
+                if age <= 5:
+                    pos = api_pos + (age if status == "Playing" else 0)
+        self.track = replace(track, status=status, position=pos, volume=vol, sampled=sampled)
+        return self.track
+
     def run(self):
         while not self.stop.is_set():
             try:
@@ -224,34 +309,7 @@ class Player:
                     self.act(player, action)
             except queue.Empty:
                 pass
-            names = command("playerctl", "-l").splitlines()
-            names = [n for n in names if n == self.explicit] if self.explicit else [
-                n for n in names if n.startswith("chromium.instance")]
-            states = [(n, command("playerctl", "-p", n, "status")) for n in names]
-            player, status = next((p for p in states if p[1] == "Playing"),
-                                  states[0] if states else ("", "Stopped"))
-            if player:
-                raw = command("playerctl", "-p", player, "metadata", "--format", SEP.join(
-                    "{{" + key + "}}" for key in ("mpris:trackid", "xesam:title", "xesam:artist",
-                                                   "xesam:album", "mpris:artUrl", "mpris:length")))
-                track = metadata_track(player, raw, self.track)
-                pos = number(command("playerctl", "-p", player, "position"))
-                sampled = time.monotonic()
-                vol = number(command("playerctl", "-p", player, "volume"), .5)
-                if self.extras and self.extras.api_available and self.extras.identity == track.identity:
-                    if self.extras.volume is not None:
-                        vol = self.extras.volume
-                    info = self.extras.now_playing
-                    duration = number(info.get("durationInMillis")) / 1000
-                    api_pos = number(info.get("currentPlaybackTime"), -1)
-                    if duration > 0 and api_pos >= 0:
-                        track = replace(track, length=duration)
-                        age = max(0, time.monotonic() - self.extras.sampled)
-                        if age <= 5:
-                            pos = api_pos + (age if status == "Playing" else 0)
-                self.track = replace(track, status=status, position=pos, volume=vol, sampled=sampled)
-            else:
-                self.track = Track()
+            self.sample()
             self.stop.wait(.3)
 
 
@@ -450,6 +508,8 @@ class Cover:
         self.last = None
         self.drawn = False
         self.needs_redraw = False
+        self.failed = None
+        self.retry_at = 0
 
     def clear(self):
         if self.drawn:
@@ -478,6 +538,8 @@ class Cover:
         signature = (path, rect, stat.st_mtime_ns if stat else None, stat.st_size if stat else None)
         if signature == self.last:
             return
+        if signature == self.failed and time.monotonic() < self.retry_at:
+            return
         self.clear()
         if not path or not Path(path).is_file():
             return
@@ -503,8 +565,11 @@ class Cover:
                 self.drawn = True
             if self.drawn:
                 self.last = signature
+                self.failed = None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             pass
+        if not self.drawn:
+            self.failed, self.retry_at = signature, time.monotonic()+10
 
 
 class UI:
@@ -519,6 +584,9 @@ class UI:
         self.extras = getattr(player, "extras", None)
         self.show_queue = self.config["queue"]
         self.queue_focus = False
+        self.queue_index = 0
+        self.queue_seen = None
+        self.queue_confirm = None
         self.show_lyrics, self.show_visual = not options.no_lyrics, not options.no_cava
         self.focus = False
         self.help = False
@@ -547,6 +615,7 @@ class UI:
         self.color_target = None
         self.color_origin = None
         self.color_started = 0
+        self.fade_done = None
         self.config_check_at = 0
         self.config_path = Path(getattr(options, "config", None) or config_dir() / "config.toml").expanduser()
         self.config_stamp = self.theme_file_stamp()
@@ -568,6 +637,45 @@ class UI:
         self.music_index = 0
         self.music_library = False
         self.music_kind = "songs"
+        self.music_collection = None
+        self.music_parent = None
+        self.timer = SleepTimer()
+        self.sleep_menu = False
+        self.sleep_index = 0
+        self.desktop = DesktopNotifications(self.config.get("desktop_notifications", False))
+
+    def sleep_key(self, key):
+        if key == "\x1b":
+            self.sleep_menu = False
+        elif key in (curses.KEY_UP, curses.KEY_DOWN):
+            self.sleep_index = (self.sleep_index + (1 if key == curses.KEY_DOWN else -1)) % 6
+        elif key in ("\n", "\r", curses.KEY_ENTER):
+            try:
+                if self.sleep_index == 5:
+                    self.timer.cancel()
+                    self.toast("Temporizador cancelado")
+                elif self.sleep_index == 4:
+                    self.timer.arm(track=self.player.track, end=True)
+                    self.toast("Pausa al terminar esta canción")
+                else:
+                    minutes = SleepTimer.DURATIONS[self.sleep_index]
+                    self.timer.arm(minutes, self.player.track)
+                    self.toast(f"Pausa en {minutes} minutos")
+                self.sleep_menu = False
+            except ValueError as error:
+                self.toast(str(error))
+        return True
+
+    def sleep_panel(self):
+        h, w = self.screen.getmaxyx()
+        if h < 12 or w < 40:
+            self.text(0, 0, "Temporizador · amplía a 40×12", 4, limit=w-1)
+            self.text(1, 0, "Esc volver", 2, limit=w-1)
+            return
+        self.box(1, 1, h-2, w-2, "TEMPORIZADOR DE PAUSA")
+        for i, choice in enumerate(("15 minutos", "30 minutos", "45 minutos", "60 minutos", "Al terminar esta canción", "Cancelar temporizador")):
+            self.text(3+i, 3, ("› " if i == self.sleep_index else "  ")+choice, 4 if i == self.sleep_index else 1, i == self.sleep_index, w-6)
+        self.text(h-3, 3, "↑↓ elegir · Enter aplicar · Esc volver", 5, limit=w-6)
 
     def theme_choices(self):
         if self.theme_page == "sources":
@@ -579,20 +687,38 @@ class UI:
         return [(name, name) for name in self.themes if name not in THEMES] + [("Crear / editar personal", "__edit__")]
 
     def music_search(self, next_path=""):
+        if self.music_collection:
+            self.music.tracks(self.music_collection, next_path)
+            return
         if not next_path:
             self.music_index = 0
         self.music_editing = False
         self.music.search(self.music_query.strip(), self.music_library, self.music_kind, next_path)
 
+    def music_back(self):
+        if self.music_collection:
+            snapshot, self.music_index = self.music_parent
+            self.music.restore(snapshot)
+            self.music_collection = self.music_parent = None
+            self.music_editing = False
+
     def music_key(self, key):
         if key == "\x1b":
-            self.music_open = False
+            if self.music_collection:
+                self.music_back()
+            else:
+                self.music_open = False
             return True
         if key == "\t":
+            self.music_back()
             self.music_library = not self.music_library
             self.music_search()
             return True
         if key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            if self.music_collection:
+                if key == curses.KEY_LEFT:
+                    self.music_back()
+                return True
             kinds = ["songs", "albums", "playlists"]
             self.music_kind = kinds[(kinds.index(self.music_kind) + (1 if key == curses.KEY_RIGHT else -1)) % 3]
             if not self.music_editing or self.music_library:
@@ -609,16 +735,31 @@ class UI:
                 self.music_query += key
             return True
         if key == "/":
+            self.music_back()
             self.music_editing = True
         elif key in self.config["keybinds"]["music"]:
+            self.music_back()
             self.music_open = False
         elif key in (curses.KEY_UP, curses.KEY_DOWN):
             self.music_index = max(0, min(len(self.music.items)-1, self.music_index + (1 if key == curses.KEY_DOWN else -1)))
         elif key == "N" and self.music.next_path and not self.music.busy:
             self.music_search(self.music.next_path)
-        elif key in ("\n", "\r", curses.KEY_ENTER, "+", "n") and self.music.items and not self.music.busy:
+        elif key == "r" and self.music_collection and not self.music.busy:
+            if not self.music.next_path:
+                self.music_index = 0
+            self.music_search(self.music.next_path)
+        elif key == "P" and self.music_collection and not self.music.busy:
+            self.music.choose(self.music_collection)
+        elif key in ("\n", "\r", curses.KEY_ENTER, "+", "n", "P") and self.music.items and not self.music.busy:
             self.music_index = min(self.music_index, len(self.music.items)-1)
-            self.music.choose(self.music.items[self.music_index], "play-later" if key == "+" else "play-next" if key == "n" else "play-item")
+            item = self.music.items[self.music_index]
+            if key in ("\n", "\r", curses.KEY_ENTER) and item["type"] in ("albums", "playlists", "library-albums", "library-playlists"):
+                self.music_parent = (self.music.snapshot(), self.music_index)
+                self.music_collection = dict(item)
+                self.music_index = 0
+                self.music.tracks(item)
+            else:
+                self.music.choose(item, "play-later" if key == "+" else "play-next" if key == "n" else "play-item")
         return True
 
     def music_panel(self):
@@ -632,8 +773,13 @@ class UI:
             self.text(1, 0, self.music.label, 2, limit=w-1)
             return
         self.box(1, 1, h-2, w-2, "ELIGE TU MÚSICA")
-        self.text(3, 3, f"{source} / {kind} · Tab cambia fuente · ←→ tipo", 4, True, w-6)
-        self.text(4, 3, "Buscar: " + self.music_query + ("▏" if self.music_editing else ""), 5, limit=w-6)
+        heading = f"{source} / {kind} · Tab cambia fuente · ←→ tipo"
+        query = "Buscar: " + self.music_query + ("▏" if self.music_editing else "")
+        if self.music_collection:
+            heading = f"{source} / {kind} / Canciones · Esc volver"
+            query = self.music_collection["title"]
+        self.text(3, 3, heading, 4, True, w-6)
+        self.text(4, 3, query, 5, limit=w-6)
         self.text(5, 3, self.music.label + (" · N cargar más" if self.music.next_path else ""), 2, limit=w-6)
         count = max(1, (h-10)//2)
         self.music_index = min(self.music_index, max(0, len(self.music.items)-1))
@@ -642,7 +788,9 @@ class UI:
             y = 7+(i-start)*2
             self.text(y, 3, ("› " if i == self.music_index else "  ")+str(item["title"]), 4 if i == self.music_index else 1, i == self.music_index, w-6)
             self.text(y+1, 5, str(item["artist"])+(" · "+str(item["album"]) if item["album"] else ""), 2, limit=w-8)
-        footer = "Enter buscar · Ctrl+U limpiar · Esc salir" if self.music_editing else "Enter play · + cola · n siguiente · / buscar · Esc salir"
+        footer = "Enter buscar · Ctrl+U limpiar · Esc salir" if self.music_editing else "Enter abrir/play · P play · + cola · n siguiente · / buscar · Esc salir"
+        if self.music_collection:
+            footer = "Enter play · + cola · n siguiente · P colección · Esc volver"
         self.text(h-3, 3, footer, 5, limit=w-6)
 
     def apply_source(self, source):
@@ -865,10 +1013,14 @@ class UI:
         if not curses.has_colors() or curses.COLORS < 256:
             return
         colors = self.dynamic_colors or self.themes[self.theme]
+        signature = (self.changed_at, colors)
+        if elapsed >= 1 and self.fade_done == signature:
+            return
         for pair, target in ((7, colors[1]), (8, colors[4]), (9, colors[2])):
-            color = nearest_color(tuple(round(a + (b - a) * elapsed) for a, b in zip(rgb(colors[0]), rgb(target))))
+            color = target if elapsed >= 1 else nearest_color(tuple(round(a + (b - a) * elapsed) for a, b in zip(rgb(colors[0]), rgb(target))))
             curses.init_pair(pair, color, colors[0])
             self.palette[pair] = curses.color_pair(pair)
+        self.fade_done = signature if elapsed >= 1 else None
 
     def text(self, y, x, text, color=1, bold=False, limit=None):
         h, w = self.screen.getmaxyx()
@@ -943,6 +1095,13 @@ class UI:
         if h >= 12:
             self.text(y + 8, tx, track.album or "Una terminal. Toda tu música.", 9 if 9 in self.palette else 2, limit=tw)
         state = "▶ REPRODUCIENDO" if track.status == "Playing" else "Ⅱ EN PAUSA" if track.status == "Paused" else "■ DETENIDO" if track.player else "○ ESPERANDO CIDER"
+        if self.extras and getattr(self.extras, "library_identity", "") == track.identity:
+            favorite = getattr(self.extras, "favorite", None)
+            library = getattr(self.extras, "library", None)
+            if favorite is True:
+                state += " · ♥"
+            if library is True:
+                state += " · BIBLIOTECA"
         self.text(y + h - 3, tx, state, 5, True, tw)
 
     def spectrum_panel(self, y, x, h, w):
@@ -983,24 +1142,46 @@ class UI:
         shuffle = "—" if not self.extras or self.extras.shuffle is None else "ON" if self.extras.shuffle else "OFF"
         repeat = {None: "—", "None": "OFF", "Track": "PISTA", "Playlist": "COLA"}.get(self.extras.repeat if self.extras else None, "—")
         self.text(y + 2, 3, f"{self.binding('shuffle')} shuffle {shuffle}   {self.binding('repeat')} repeat {repeat}", 5, limit=w - 6)
-        self.text(y + 5, 3, f"{self.binding('music')} música   {self.binding('theme_picker')} temas   {self.binding('search')} letras   {self.binding('export')} guardar   {self.binding('queue')} cola   {self.binding('help')} ayuda", 2, limit=w - 6)
+        self.text(y + 5, 3, f"{self.binding('music')} música   {self.binding('theme_picker')} temas   {self.binding('queue')} cola   {self.binding('favorite')} ♥   {self.binding('library')} biblioteca   {self.binding('sleep')} timer   {self.binding('help')} ayuda", 2, limit=w - 6)
+        if self.timer.active:
+            timer_label = self.timer.label()
+            if w >= 80:
+                self.text(y+2, max(3, w-width(timer_label)-4), timer_label, 4, limit=w-6)
+            else:
+                self.text(y+5, 3, timer_label+" · "+self.binding('sleep')+" cambiar", 4, limit=w-6)
 
     def queue_panel(self, y, x, h, w):
         self.box(y, x, h, w, "UP NEXT", "QUEUE")
         items, label = (self.extras.items, self.extras.label) if self.extras else ([], "Cola no disponible")
+        view = getattr(self.extras, "queue_view", None) if self.extras else None
+        if view != self.queue_seen:
+            self.queue_seen, self.queue_index = view, 0
+        if self.queue_focus and self.queue_seen and self.queue_seen[0] == self.player.track.identity:
+            items = [(title, artist) for _, title, artist in self.queue_seen[1]]
         if self.extras and self.extras.identity != self.player.track.identity:
             items, label = [], "Actualizando cola…"
+            self.queue_seen, self.queue_index = None, 0
         if not items:
             self.text(y + 3, x + 3, label, 2, limit=w - 6)
-        for i, (title, artist) in enumerate(items[:min(5, (h - 3) // 2)]):
-            self.text(y + 2 + i * 2, x + 3, f"{i + 1:02d}  {title}", 4 if i == 0 else 1, i == 0, w - 6)
-            self.text(y + 3 + i * 2, x + 7, artist, 2, limit=w - 10)
+        count = max(1, (h - 5) // 2) if self.queue_focus else min(5, (h - 3) // 2)
+        self.queue_index = min(self.queue_index, max(0, len(items)-1))
+        start = max(0, self.queue_index-count+1) if self.queue_focus else 0
+        for i, (title, artist) in enumerate(items[start:start+count], start):
+            selected = i == self.queue_index if self.queue_focus else i == 0
+            row = y + 2 + (i-start)*2
+            self.text(row, x + 3, f"{'›' if selected else ' '} {i + 1:02d}  {title}", 4 if selected else 1, selected, w - 6)
+            self.text(row+1, x + 7, artist, 2, limit=w - 10)
+        if self.queue_focus:
+            footer = f"↑↓ elegir · Enter saltar · d borrar · c vaciar pendientes · Q/Esc volver · {self.queue_index+1 if items else 0}/{len(items)}"
+            if self.queue_confirm:
+                footer = "¿Borrar canción? Enter confirma · Esc cancela" if self.queue_confirm[0] == "delete" else "¿Vaciar pendientes? Enter confirma · Esc cancela"
+            self.text(y+h-2, x+3, footer, 5, limit=w-6)
 
     def mini(self, track, w):
         state = "▶" if track.status == "Playing" else "Ⅱ" if track.player else "○"
         timer = f"{clock(track.elapsed())}/{clock(track.length) if track.length else '--:--'}"
         volume = f"♪ {track.volume:.0%}"
-        tail = f"  {timer}  {volume}"
+        tail = f"  {timer}  {volume}" + ("  "+self.timer.label() if self.timer.active else "")
         title = f"{state} {track.title or 'Esperando Cider'} — {track.artist}"
         self.text(0, 0, clip(title, max(1, w - width(tail) - 2)) + tail, 4, True, w - 1)
         message = self.toast_text if time.monotonic() < self.toast_until else f"{self.binding('toggle')} play/pausa · {self.binding('shuffle')} shuffle · {self.binding('repeat')} repeat · {self.binding('quit')} salir"
@@ -1082,6 +1263,10 @@ class UI:
         screen.erase()
         self.art_rect = None
         self.progress_rect = self.lyrics_rect = None
+        if self.sleep_menu:
+            self.sleep_panel()
+            screen.refresh()
+            return
         if self.theme_menu:
             self.theme_panel()
             screen.refresh()
@@ -1150,10 +1335,11 @@ class UI:
                 lyrics="mostrar letras", focus="letras ampliadas", visualizer="mostrar CAVA", theme="cambiar tema", theme_picker="selector de temas",
                 scroll_up="subir letras", scroll_down="bajar letras", offset_back="offset −0.5s",
                 offset_forward="offset +0.5s", retry="reintentar letras", open="abrir Cider",
-                search="buscar letras", export="guardar letras", queue="cola ampliada", music="buscar/elegir música")
+                search="buscar letras", export="guardar letras", queue="cola ampliada", music="buscar/elegir música",
+                favorite="alternar favorito", library="añadir a biblioteca", sleep="temporizador de pausa")
             groups = {
-                "REPRODUCCIÓN": "toggle next previous forward back up down mute restart shuffle repeat",
-                "NAVEGACIÓN": "music queue open quit help",
+                "REPRODUCCIÓN": "toggle next previous forward back up down mute restart shuffle repeat sleep",
+                "NAVEGACIÓN": "music queue favorite library open quit help",
                 "LETRAS": "lyrics focus search export scroll_up scroll_down offset_back offset_forward retry",
                 "APARIENCIA": "visualizer theme theme_picker",
             }
@@ -1189,12 +1375,43 @@ class UI:
         self.cover.show(track.art, self.art_rect)
 
     def key(self, key):
+        if self.sleep_menu:
+            return self.sleep_key(key)
         if self.theme_menu:
             return self.theme_key(key)
         if self.music_open and self.music:
             return self.music_key(key)
         if self.prompt:
             return self.prompt_key(key)
+        if self.queue_focus and not self.help:
+            if self.queue_confirm:
+                if key in ("\n", "\r", curses.KEY_ENTER):
+                    operation, selected, view = self.queue_confirm
+                    self.player.send(("queue", selected, view, operation))
+                    self.queue_confirm = None
+                elif key == "\x1b":
+                    self.queue_confirm = None
+                return True
+            if key == "\x1b":
+                self.queue_focus = False
+                return True
+            if key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_NPAGE, curses.KEY_PPAGE, curses.KEY_HOME, curses.KEY_END):
+                size = len(self.queue_seen[1]) if self.queue_seen else 0
+                step = {curses.KEY_UP:-1, curses.KEY_DOWN:1, curses.KEY_NPAGE:5, curses.KEY_PPAGE:-5}.get(key,0)
+                self.queue_index = max(0, min(size-1, 0 if key == curses.KEY_HOME else size-1 if key == curses.KEY_END else self.queue_index+step))
+                return True
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                if self.queue_seen and self.queue_seen[1]:
+                    self.player.send(("queue", self.queue_index, self.queue_seen))
+                else:
+                    self.toast("Sin cola seleccionable · conecta la API de Cider")
+                return True
+            if key in ("d", curses.KEY_DC, "c"):
+                if self.queue_seen and self.queue_seen[1]:
+                    self.queue_confirm = ("clear_pending" if key == "c" else "delete", self.queue_index, self.queue_seen)
+                else:
+                    self.toast("Sin cola seleccionable · conecta la API de Cider")
+                return True
         if self.help and key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
             self.help_page += 1 if key == curses.KEY_NPAGE else -1
             return True
@@ -1206,6 +1423,11 @@ class UI:
         action = self.config["keymap"].get(normalized)
         if action in ("toggle", "next", "previous", "forward", "back", "up", "down", "mute", "restart", "shuffle", "repeat"):
             self.player.send(action)
+        elif action in ("favorite", "library"):
+            self.player.send(("library", "add" if action == "library" else "favorite", self.player.track))
+        elif action == "sleep":
+            self.sleep_menu, self.sleep_index = True, 0
+            self.cover.clear()
         elif action == "quit":
             return False
         elif action == "help" or key == "\x1b":
@@ -1292,6 +1514,14 @@ class UI:
         try:
             while not self.player.stop.is_set():
                 track = self.player.track
+                pause = self.timer.tick(track)
+                if pause:
+                    try:
+                        self.player.actions.put_nowait(pause)
+                        self.toast("Temporizador terminado · pausa solicitada")
+                    except queue.Full:
+                        self.toast("No se pudo enviar la pausa; controles ocupados")
+                self.desktop.update(track, track.art)
                 if track.identity != self.old_identity:
                     self.old_identity, self.scroll, self.offset = track.identity, 0, self.config["lyrics_offset"]
                     self.changed_at = time.monotonic()
@@ -1314,6 +1544,47 @@ class UI:
                     break
         finally:
             self.cover.clear()
+            self.desktop.close()
+
+
+def remote_command(options, conf):
+    if not shutil.which("playerctl"):
+        raise ValueError("Falta playerctl")
+    player = Player(threading.Event(), options.player)
+    player.extras = Extras(player.stop, player, conf)
+    track = player.sample(artwork=False)
+    if options.remote == "status":
+        if track.player and is_cider_player(track.player):
+            try:
+                info = player.recovery_info or player.extras.api.request("now-playing").get("info", {})
+                volume = player.extras.api.request("volume").get("volume")
+                if type(volume) in (int, float) and math.isfinite(volume) and 0 <= volume <= 1:
+                    track = replace(track, volume=volume)
+                if info.get("name") == track.title and info.get("artistName") == track.artist:
+                    duration = number(info.get("durationInMillis"))/1000
+                    position = number(info.get("currentPlaybackTime"), track.elapsed())
+                    track = replace(track, length=duration if 0 < duration < 86400 else track.length,
+                                    position=position, sampled=time.monotonic())
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        position = track.elapsed()
+        print(json.dumps(dict(player=track.player, title=track.title, artist=track.artist,
+                              album=track.album, status=track.status, position=position,
+                              duration=track.length, progress=position/track.length if track.length else 0,
+                              volume=track.volume), ensure_ascii=False, separators=(",", ":")))
+        return 0
+    if not track.player:
+        raise ValueError("No hay un reproductor MPRIS disponible")
+    if is_cider_player(track.player):
+        try:
+            result = player.extras.api.request("active")
+            player.extras.api_available = isinstance(result, dict) and result.get("status") == "ok"
+        except (OSError, ValueError):
+            pass
+    player.act(track.player, options.remote)
+    if player.notice:
+        raise ValueError(player.notice)
+    return 0
 
 
 def main():
@@ -1323,6 +1594,7 @@ def main():
     parser.add_argument("--init-config", action="store_true", help="crear config.toml sin sobrescribir")
     parser.add_argument("--check-config", action="store_true", help="validar preferencias y salir")
     parser.add_argument("--connect-cider", action="store_true", help="conectar el token de la API local")
+    parser.add_argument("--install-cider-plugin", nargs="?", const="", metavar="DIR", help="instalar el complemento de favoritos en Cider")
     parser.add_argument("--history", nargs="?", const=20, type=int, metavar="N", help="últimas N canciones")
     parser.add_argument("--mini", action="store_true", help="interfaz de dos líneas")
     parser.add_argument("--dynamic-palette", action="store_true", default=None, help="colores de la portada")
@@ -1334,8 +1606,28 @@ def main():
     parser.add_argument("--theme-source", choices=("cover", "fixed", "custom", "pywal"), help="fuente de colores")
     parser.add_argument("--palette-mode", choices=("extract", "complementary", "contrast"), help="modo de paleta de carátula")
     parser.add_argument("--cava-input", choices=("pulse", "pipewire"))
+    remote = parser.add_mutually_exclusive_group()
+    remote.add_argument("--status", dest="remote", action="store_const", const="status", help="estado JSON sin abrir la interfaz")
+    remote.add_argument("--next", dest="remote", action="store_const", const="next", help="siguiente canción")
+    remote.add_argument("--prev", dest="remote", action="store_const", const="previous", help="canción anterior")
+    remote.add_argument("--toggle", dest="remote", action="store_const", const="toggle", help="alternar reproducción/pausa")
     options = parser.parse_args()
     try:
+        if options.install_cider_plugin is not None:
+            source = Path(__file__).resolve().parents[1] / "share/amui/cider-plugin"
+            cider_home = config_dir().parent / "sh.cider.genten"
+            if not options.install_cider_plugin and not cider_home.is_dir():
+                raise ValueError("No se encontró Cider; indica el directorio del complemento")
+            target = Path(options.install_cider_plugin).expanduser() if options.install_cider_plugin else cider_home / "plugins/io.github.echolenn.amui"
+            target.mkdir(parents=True, exist_ok=True)
+            for filename in ("plugin.js", "plugin.yml"):
+                destination = target / filename
+                if destination.exists() and destination.read_bytes() != (source/filename).read_bytes():
+                    shutil.copy2(destination, target/(filename+".previous"))
+                shutil.copy2(source/filename, destination)
+            print("Complemento instalado:", target)
+            print("Cider → Settings → Plugins: actualiza la lista y activa amui Favorites Bridge.")
+            return 0
         if options.init_config:
             path = Path(options.config).expanduser() if options.config else config_dir() / "config.toml"
             sample = Path(__file__).resolve().parents[1] / "share/amui/config.example.toml"
@@ -1346,6 +1638,8 @@ def main():
             return 0
         config_path = Path(options.config).expanduser() if options.config else config_dir() / "config.toml"
         conf = load_config(config_path)
+        if options.remote:
+            return remote_command(options, conf)
         try:
             conf["themes"]["personal"] = custom_palette(config_path.parent / "custom-theme.json")
         except ValueError:

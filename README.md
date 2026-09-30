@@ -3,6 +3,89 @@
 Una sala de escucha en tu terminal: Cider reproduce Apple Music; **amui** pone
 la portada, los controles, el espectro de audio y las letras al frente.
 
+## v0.5.6 — propuestas completas y auditoría
+
+- `Q`: navegar y saltar en la cola; `d`/Supr elimina la selección y `c` vacía
+  **solo las pendientes**. Enter confirma; Esc cancela. Se verifica la cola
+  antes de cada eliminación; historial y canción actual quedan intactos.
+- `H`: alternar el favorito real de Apple Music. `A`: añadir la pista a tu
+  biblioteca. El corazón aparece únicamente después de confirmar el estado
+  guardado; no se confunden favoritos con calificaciones.
+- `Z`: pausa tras 15/30/45/60 minutos o al terminar la canción; incluye cancelar
+  y cuenta regresiva. Cambiar de reproductor cancela el temporizador.
+- Notificaciones del escritorio opcionales: `desktop_notifications = true`.
+  Requieren `notify-send` (paquete `libnotify` en Arch); no se activan por defecto.
+- `amui --status` devuelve una línea JSON sin abrir la interfaz.
+  `--next`, `--prev` y `--toggle` sirven para barras o atajos del escritorio.
+
+Se conserva un solo ejecutable para todos los terminales. La auditoría añade
+protección para controles de una sesión anterior, reintentos espaciados de
+portadas fallidas y evita recalcular animaciones ya terminadas.
+Ver [auditoría y límites de verificación](docs/AUDIT-v0.5.6.md).
+
+### Activar favoritos una vez
+
+Con la API local ya conectada (`amui --connect-cider`):
+
+```bash
+amui --install-cider-plugin
+```
+
+En **Cider → Settings → Plugins**, actualiza la lista y activa
+**amui Favorites Bridge**. La activación carga el complemento sin interrumpir
+la reproducción; reiniciar por sí solo no sustituye activarlo.
+El complemento solo recibe cambios explícitos de favorito desde amui y usa
+el cliente Apple Music de Cider. No requiere Node ni dependencias Python
+para funcionar. `A` no necesita este complemento.
+
+Los temporizadores son de sesión: cerrar amui los cancela. El modo fin de
+canción puede pausar unos instantes después de empezar la siguiente, por el
+intervalo de lectura del reproductor; un salto manual temprano lo cancela.
+
+## v0.5.5 — recuperación después de saltar en la cola
+
+Se reprodujo un fallo en el que Cider conserva canción y cola en su API, pero
+MPRIS devuelve título, artista y portada vacíos, incluso tras reiniciar amui.
+Ahora amui recupera esos datos desde Cider si verifica que la instancia Chromium
+pertenece al ejecutable local de Cider. Nunca sustituye metadatos MPRIS válidos
+ni aplica esa recuperación a otro Chromium. La portada oficial se guarda en la
+caché de amui; no se modifica la cola, la configuración ni la reproducción.
+
+## v0.5.4 — navegación de cola
+
+- `Q` abre la cola ampliada; ↑↓ selecciona, PgUp/PgDn avanza cinco posiciones,
+  Home/End va al inicio/final y Enter salta a la canción seleccionada.
+- `Q` o Esc regresa. Fuera de la cola, ↑↓ conserva el control de volumen.
+- Se muestran todas las próximas canciones devueltas por Cider, no solo cinco.
+- El salto usa la posición existente: no añade canciones ni reconstruye la cola.
+- Si cambia la cola o la canción antes de enviar la orden, se cancela el salto
+  y se solicita seleccionar de nuevo. No se adivinan posiciones ambiguas.
+- Requiere la API local de Cider; la cola obtenida solo por MPRIS sigue en modo
+  lectura. En esa versión no se incluían eliminar, reordenar ni vaciar la cola.
+
+La v0.5.3 fue confirmada por el usuario. Las pruebas automáticas no alteran
+la cola real; se mantienen en el historial las comprobaciones de cada entrega.
+
+## v0.5.3 — propuesta 1
+
+El buscador ahora permite entrar en álbumes y playlists del catálogo y de la
+biblioteca. No hay versiones distintas por terminal: se mantiene un ejecutable.
+
+1. Abre `amui` (o el lanzador opcional `amui-kitty`) y pulsa `b`.
+2. Usa ←/→ para elegir Álbumes o Playlists; escribe una consulta y pulsa Enter.
+   Tab alterna con tu biblioteca; una consulta vacía permite recorrerla.
+3. Selecciona una colección y pulsa Enter: abre sus canciones sin reproducirla.
+4. ↑↓ selecciona; Enter reproduce una canción; `+` añade al final y `n` a continuación.
+5. `N` carga más canciones si quedan páginas. Se conserva el orden y las repeticiones.
+6. Esc o ← vuelve a los resultados anteriores, conservando selección y páginas.
+7. `P` reproduce la colección completa; `r` reintenta una consulta fallida.
+
+65 pruebas aprobadas, incluidas navegación de teclado en terminal, errores,
+paginación y respuestas tardías. Consultas reales de las cuatro combinaciones
+(catálogo/biblioteca × álbumes/playlists) verificadas sin modificar reproducción.
+Las órdenes de reproducción se verificaron con fixtures y posteriormente el
+usuario confirmó esta entrega. La v0.5.2 se respaldó en GitHub antes de iterar.
+
 ## Abrir con la fuente de amui
 
 Después de `make install`, abre **amui** desde el menú de aplicaciones o ejecuta
@@ -169,6 +252,8 @@ no modifica tu configuración personal de CAVA.
 | `s` | Alternar shuffle |
 | `e` | Alternar repeat: off, cola, pista (el orden de Cider puede diferir) |
 | `Q` | Cola a pantalla completa |
+| `H` / `A` | Alternar favorito / añadir a biblioteca |
+| `Z` | Temporizador de pausa |
 | `/` | Buscar letras por título y artista |
 | `S` | Exportar letras a un directorio elegido |
 | `L` (mayúscula) | Mostrar / ocultar panel de letras |
@@ -189,6 +274,15 @@ el arranque, usa `--no-lyrics` o `--no-cava`.
 
 Los prompts aceptan `Enter`, `Esc`, retroceso y `Ctrl+U` para limpiar. Las
 teclas escritas dentro del prompt no controlan el reproductor.
+
+Dentro de `Q`, ↑↓/PgUp/PgDn/Home/End selecciona y Enter salta; `d`/Supr o `c`
+abre la confirmación de borrado. No se borra nada hasta pulsar Enter. La cola
+MPRIS sin API sigue siendo informativa; no se reconstruyen colas ambiguas.
+
+Para integración con barras, `amui --status` incluye `player`, `title`, `artist`,
+`album`, `status`, `position`, `duration`, `progress` (0–1) y `volume` (0–1).
+Sin reproductor devuelve estado `Stopped` y valores vacíos. Los controles
+remotos devuelven un código de error si falta sesión o la orden es rechazada.
 
 ## Configuración y temas
 
@@ -279,15 +373,18 @@ Los errores de red se muestran en el panel; `R` vuelve a intentarlo.
 
 La caché está en `$XDG_CACHE_HOME/amui/lyrics` o `~/.cache/amui/lyrics`.
 La portada usa la ruta local `file://` publicada por MPRIS, incluidos espacios
-codificados. Se actualiza si llega tarde o cambia de ruta. Las portadas con
-URL remota no se descargan en esta versión.
+codificados. Se actualiza si llega tarde o cambia de ruta. Al recuperar
+metadatos vacíos de Cider, también puede guardar su portada oficial HTTPS
+de `mzstatic.com`, con límites de tamaño/tiempo y sin seguir redirecciones.
+No descarga URLs arbitrarias.
 
 ## Desarrollo
 
 ```text
-bin/amui              Interfaz y servicios; Python estándar
+bin/amui              Interfaz y controles; Python estándar
 lib/amui/features.py   Config, cola/API, historial, scrobbling y portadas
-share/amui/           Configuración de ejemplo instalada
+lib/amui/services.py   Temporizador y notificaciones sin hilos nuevos
+share/amui/           Configuración, lanzador y complemento de favoritos
 tests/                Pruebas unitarias, HTTP local y terminal PTY
 docs/                 Configuración y detalles de integración
 Makefile              check / install / uninstall

@@ -104,6 +104,81 @@ class TerminalTests(unittest.TestCase):
                 os.close(master)
                 os.close(slave)
 
+    def test_library_queue_confirmation_and_timer_in_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            master, slave, process = self.open_ui(directory)
+            try:
+                output=self.read(master,.5)
+                os.write(master,b'HAQd')
+                output+=self.read(master,.2)
+                self.assertIn('¿Borrar canción?'.encode(),output)
+                os.write(master,b'\x1b')
+                output+=self.read(master,.1)
+                os.write(master,b'c\n')
+                output+=self.read(master,.2)
+                os.write(master,b'\x1bZ')
+                output+=self.read(master,.2)
+                self.assertIn(b'TEMPORIZADOR',output)
+                os.write(master,b'\n')
+                output+=self.read(master,.2)
+                os.write(master,b'Z\x1bOA\n')
+                output+=self.read(master,.2)
+                os.write(master,b'q');process.wait(timeout=3)
+                events=[json.loads(line) for line in (Path(directory)/'actions.jsonl').read_text().splitlines()]
+                self.assertEqual([e[0] for e in events],['library','library','queue'])
+                self.assertEqual([e[1] for e in events[:2]],['favorite','add'])
+                self.assertEqual(events[2][3],'clear_pending')
+                self.assertEqual(process.returncode,0,output[-1500:])
+            finally:
+                if process.poll() is None: process.kill();process.wait()
+                os.close(master);os.close(slave)
+
+    def test_queue_selection_in_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            master, slave, process = self.open_ui(directory)
+            try:
+                output=self.read(master,.5)
+                os.write(master,b'Q'); output+=self.read(master,.2)
+                os.write(master,b'\x1bOB\x1bOB\n'); output+=self.read(master,.3)
+                os.write(master,b'\x1b'); output+=self.read(master,.1)
+                os.write(master,b'q'); process.wait(timeout=3)
+                events=[json.loads(line) for line in (Path(directory)/'actions.jsonl').read_text().splitlines()]
+                jumps=[event for event in events if isinstance(event,list) and event[0]=='queue']
+                self.assertEqual(len(jumps),1)
+                self.assertEqual(jumps[0][1],2)
+                self.assertNotIn('down',events)
+                self.assertEqual(process.returncode,0,output[-1000:])
+            finally:
+                if process.poll() is None: process.kill(); process.wait()
+                os.close(master); os.close(slave)
+
+    def test_collection_open_play_and_back_in_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            master, slave, process = self.open_ui(directory)
+            try:
+                output=self.read(master,.5)
+                os.write(master,b'bfixture\x1bOC\n')
+                output+=self.read(master,.4)
+                os.write(master,b'\n')
+                output+=self.read(master,.4)
+                self.assertIn(b'Collection Track',output)
+                os.write(master,b'\n+P')
+                output+=self.read(master,.2)
+                os.write(master,b'\x1b')
+                output+=self.read(master,.2)
+                os.write(master,b'P')
+                output+=self.read(master,.2)
+                os.write(master,b'\x1b')
+                output+=self.read(master,.1)
+                os.write(master,b'q'); process.wait(timeout=3)
+                events=[json.loads(line) for line in (Path(directory)/'music.jsonl').read_text().splitlines()]
+                self.assertEqual([e['item']['type'] for e in events],['songs','songs','albums','albums'])
+                self.assertEqual(events[1]['action'],'play-later')
+                self.assertEqual(process.returncode,0,output[-1000:])
+            finally:
+                if process.poll() is None: process.kill(); process.wait()
+                os.close(master); os.close(slave)
+
     def test_music_browser_input_selection_and_library_in_terminal(self):
         with tempfile.TemporaryDirectory() as directory:
             master, slave, process = self.open_ui(directory)

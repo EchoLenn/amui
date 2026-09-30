@@ -2,6 +2,12 @@
 
 Análisis de la versión actual de **amui** y propuestas priorizadas de nuevas funcionalidades diseñadas bajo principios de simplicidad, cero dependencias adicionales y alto impacto práctico.
 
+**Estado v0.5.6:** las seis propuestas están implementadas. Este documento
+conserva el diseño original; el comportamiento definitivo, configuración y
+límites se describen en `README.md`, `docs/CONFIGURATION.md` y
+`docs/AUDIT-v0.5.6.md`. Favoritos usa la operación real de Apple Music, no el
+endpoint de calificación propuesto inicialmente; requiere el complemento incluido.
+
 ---
 
 ## 🚀 Funcionalidades Propuestas

@@ -109,6 +109,7 @@ class AmuiTests(unittest.TestCase):
 
     def test_mute_restores_and_volume_is_bounded(self):
         player = amui.Player(threading.Event())
+        player.track = amui.Track(player="test")
         with patch.object(amui, "command", side_effect=["0.7", "0", "0.99", "0.01"]), \
              patch.object(amui.subprocess, "run") as run:
             run.return_value.returncode = 0
